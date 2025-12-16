@@ -1,0 +1,39 @@
+Milestone 2 — Append-only key-value records (last-write-wins)
+
+Goal: Implement append-only format for key-value records and a simple CLI to put/get/delete.
+
+Tasks:
+
+Choose record format (use header above). Implement serialization/deserialization.
+
+Implement put(key, value):
+
+serialize record to buffer
+
+append to file (fwrite)
+
+optionally fflush / fsync depending on durability mode (start without fsync)
+
+Implement get(key) by scanning file linearly (for now).
+
+Implement delete(key) as a tombstone record (record_type = tombstone).
+
+Provide CLI or API:
+
+int db_put(const char *key, const char *value);
+
+char *db_get(const char *key); (caller frees)
+
+int db_delete(const char *key);
+
+Why:
+
+You’ll learn record serialization, buffer building, and the simplest correct DB semantics: append-only + last occurrence wins.
+
+Tests:
+
+Put a key, get it back. Update same key twice — ensure last value returned. Delete key — verify get returns not found.
+
+Deliverable:
+
+kv.c/kv.h, simple REPL CLI (kv_cli) to interact.
