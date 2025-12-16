@@ -1,19 +1,28 @@
 CC = gcc
-CFLAGS = -std=c99 -Wall -Wextra -g
-TARGET = simpledb
-SOURCES = main.c kv.c io.c
-OBJECTS = $(SOURCES:.c=.o)
+CFLAGS = -Wall -Wextra -std=c99 -g -Iinclude
+SRCDIR = src
+INCDIR = include
+BUILDDIR = build
+TARGET = $(BUILDDIR)/simpledb
+
+SOURCES = $(wildcard $(SRCDIR)/*.c)
+OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
+
+.PHONY: all clean dirs
+
+all: dirs $(TARGET)
+
+dirs:
+	@mkdir -p $(BUILDDIR)
 
 $(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(OBJECTS) -o $@
 
-%.o: %.c
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(OBJECTS) $(TARGET) test.db
+	rm -rf $(BUILDDIR)
 
-test: $(TARGET)
-	./$(TARGET)
-
-.PHONY: clean test
+install: $(TARGET)
+	cp $(TARGET) /usr/local/bin/
