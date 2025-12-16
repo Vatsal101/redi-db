@@ -67,17 +67,23 @@ char *db_get(const char *key) {
 		ssize_t r = db_read_at(offset, header_buf, HEADER_LEN);
 
 		if (r == 0) break; // checks if we at EOF
-		if (r < 0 || r != HEADER_LEN) return NULL; // if not read correctly
-
+		if (r < 0 || r != HEADER_LEN) {
+			free(found);	
+			return NULL; // if not read correctly
+		}
 		deserialize(header_buf, &h); // deserializes header
 
 		// initialies keybuf with malloc since the size of key_len constantly changes and we dont know this at compile time		
 		char *key_buf = malloc(h.key_len + 1);	
-		if (!key_buf) {return NULL;}
+		if (!key_buf) {
+			free(found);	
+			return NULL;
+		}
 
 		ssize_t kb = db_read_at(offset + HEADER_LEN, key_buf, h.key_len);
 		if (kb < 0 || kb != h.key_len) {
 			free(key_buf);
+			free(found);	
 			return NULL; // if not read correctly
 		}
 		key_buf[h.key_len] = '\0';
@@ -86,6 +92,7 @@ char *db_get(const char *key) {
 		char *val_buf = malloc(h.val_len + 1);	
 		if (!val_buf) {
 			free(key_buf); 
+			free(found);	
 			return NULL;
 		}	
 		
@@ -93,6 +100,7 @@ char *db_get(const char *key) {
 		if (vb < 0 || vb != h.val_len) {
 			free(val_buf);
 			free(key_buf);
+			free(found);	
 			return NULL; // if not read correctly
 		}
 		val_buf[h.val_len] = '\0';
@@ -105,14 +113,19 @@ char *db_get(const char *key) {
 				free(val_buf);
 				return NULL;
 			}
-			memcpy(found, val_buf, h.val_len + 1);
+
+			memcpy(found, val_buf, h.val_len);
 			found[h.val_len] = '\0'; // Proper null termination
-		
-			break;
+
+			free(key_buf);
+			free(val_buf);
+		} else {
+			free(key_buf);
+			free(val_buf);
 		}
+		
 		offset += h.record_len;
-		free(key_buf);
-		free(val_buf);
+	
 	}
 
 	return found;
