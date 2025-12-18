@@ -88,48 +88,75 @@ char *db_get(const char *key) {
 		}
 		key_buf[h.key_len] = '\0';
 		
-		// same logic as key buf
-		char *val_buf = malloc(h.val_len + 1);	
-		if (!val_buf) {
-			free(key_buf); 
-			free(found);	
-			return NULL;
-		}	
 		
-		ssize_t vb = db_read_at(offset + HEADER_LEN + h.key_len, val_buf, h.val_len);
-		if (vb < 0 || vb != h.val_len) {
-			free(val_buf);
-			free(key_buf);
-			free(found);	
-			return NULL; // if not read correctly
-		}
-		val_buf[h.val_len] = '\0';
-
 		if (h.key_len == keylen && strncmp(key, key_buf, keylen) == 0) {
-			free(found); // clean found just in case
-			found = malloc(h.val_len + 1);
-			if (!found) {
-				free(key_buf);
-				free(val_buf);
-				return NULL;
+			if (h.record_type == 2) {
+				// this record is a tombstone
+				free(found);
+				found = NULL;
+
+			} else {
+                // Found a regular record for this key
+                char *val_buf = malloc(h.val_len + 1);	
+                if (!val_buf) {
+                    free(key_buf); 
+                    free(found);	
+                    return NULL;
+                }	
+                
+                ssize_t vb = db_read_at(offset + HEADER_LEN + h.key_len, val_buf, h.val_len);
+                if (vb < 0 || vb != h.val_len) {
+                    free(val_buf);
+                    free(key_buf);
+                    free(found);	
+                    return NULL;
+                }
+                val_buf[h.val_len] = '\0';
+                
+                free(found); // clean found just in case
+                found = malloc(h.val_len + 1);
+                if (!found) {
+                    free(key_buf);
+                    free(val_buf);
+                    return NULL;
+                }
+
+                memcpy(found, val_buf, h.val_len);
+                found[h.val_len] = '\0';
+                free(val_buf);
 			}
-
-			memcpy(found, val_buf, h.val_len);
-			found[h.val_len] = '\0'; // Proper null termination
-
-			free(key_buf);
-			free(val_buf);
-		} else {
-			free(key_buf);
-			free(val_buf);
 		}
-		
-		offset += h.record_len;
-	
-	}
 
-	return found;
-			
+        free(key_buf);
+        offset += h.record_len;
+	}
+	
+	return found;			
+}
+
+int db_delete(const char *key) {
+	if (key == NULL) return -1;
+
+	record_header_t record;
+	size_t klen = strlen(key);
+
+	record.record_type = 2;
+	record.key_len = (uint16_t) strlen(key);
+	record.val_len = 0;
+	record.record_len = HEADER_LEN + (uint16_t) klen;
+
+	// char buffer we use to hold the data
+	char header[HEADER_LEN];
+	
+	// uses the size of the keys, value, records to seralize the data to a buffer 	
+	serialize(&record, header);
+	
+	// uses the general buffer as way to put the data into the db
+	
+	if (db_append_raw(header, HEADER_LEN) != 0) return -1;
+	if (db_append_raw(key, klen) != 0) return -1;
+
+	return 0;
 }
 
 
