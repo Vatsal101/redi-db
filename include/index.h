@@ -8,6 +8,7 @@
 typedef struct {
     uint8_t tombstone; // 0 = put, 1 = tombstone
 	uint32_t offset;  // actual offsetvalue 
+	char* key; // value of the key
 } hash_table_val;
 
 
