@@ -4,6 +4,7 @@
 #include <stdint.h>  // For uint32_t, uint8_t, uint16_t
 #include <stddef.h>  // For size_t
 #include <stdio.h>   // For FILE*
+#include <string.h>
 
 typedef struct {
     uint8_t tombstone; // 0 = put, 1 = tombstone
@@ -11,10 +12,12 @@ typedef struct {
 	char* key; // value of the key
 } hash_table_val;
 
-
-
-int insert(const char *key, const char *value);
-int get(const char *path);
-int remove(const char *key);
+int init_hash_table(void);
+void cleanup_hash_table(void);
+unsigned long hash(const char *str);
+void resize(void);
+int get(const char *key);
+int insert(const char *key, long value);
+int delete(const char *key);
 #endif
 
