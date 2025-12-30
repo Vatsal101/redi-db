@@ -7,8 +7,8 @@
 #include <string.h>
 
 typedef struct {
-    uint8_t tombstone; // 0 = put, 1 = tombstone
-	uint32_t offset;  // actual offsetvalue 
+	uint8_t tombstone; // 0 = put, 1 = tombstone
+	long offset;  // actual offsetvalue 
 	char* key; // value of the key
 } hash_table_val;
 
@@ -19,5 +19,11 @@ void resize(void);
 int get(const char *key);
 int insert(const char *key, long value);
 int delete(const char *key);
+
+extern hash_table_val *arr_ptr;
+extern int starting_elements;
+extern int size;
+extern int capacity;
+
 #endif
 

@@ -30,5 +30,5 @@ int db_read_at(long offset, void *buf, size_t len);
 int db_rewind(void);
 long get_curr_offset(void);
 int fill_offset_table(void);
-
+int db_compact(const char *path);
 #endif // IO_H

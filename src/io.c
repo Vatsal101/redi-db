@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <unistd.h>
 #include "io.h"
 #include "index.h"
 
@@ -30,7 +30,6 @@ void db_close() {
         fclose(p_db_file);
         p_db_file = NULL;
     }
-    
     // Clean up hash table when closing database
     cleanup_hash_table();
 }
@@ -82,6 +81,25 @@ int db_append_raw(const void *buf, size_t len){
 	return 0;
 }
 
+int db_append_raw_specifc(const void *buf, size_t len, FILE fp){
+	if (!fp || !buf) return -1;
+	// ensure the writes will be going to the end of the file
+	if (fseek(fp, 0, SEEK_END) != 0) {
+		return -1;
+	}
+	// append the raw data to the file and check if it was written
+	//
+	size_t written = fwrite(buf, len, 1, fp);
+	if (written != 1) {
+		return -1;
+	}
+	//flush to make sure its written to OS buffers	
+	if (fflush(fp) != 0) {
+		return -1;	
+	}
+
+	return 0;
+}
 // since the buffer is not a const it means it can be modified that means that buf is going to be an abstract way 
 // to store the data we get from our db when we are done storing it.
 // This works by first moving the file pointer to the specific location we want which is decided by the offset number
@@ -212,4 +230,133 @@ long get_curr_offset() {
 		return current_offset; // this is the current offset of the file pointer is at
 	}
 
+}
+
+/*
+
+creates a new temp file
+then iterates through the hashmap and adds these values in the hashmap to the new temp file
+the values in the hashamp are the latest put records and thus we skip deleted keys
+replaces files atomicaly
+*/
+int db_compact(const char *path) {
+	char filename_template[] = "/tmp/my_temp_fileXXXXXX"; 
+    int fd;
+	FILE *f;
+
+    // Create and open the unique temporary file
+    fd = mkstemp(filename_template);
+
+    if (fd == -1) return -1; 	
+
+	f = fdopen(fd, "w+b");
+
+	if (!f){
+		close(fd);
+		unlink(filename_template);
+		return -1;
+	} 
+
+	// FILE *f = fopen("temp.db", "w+b");		
+	// if (!f) return -1;
+
+	char header_buf[HEADER_LEN];
+	record_header_t h;
+	
+	for (int i = 0; i < capacity; i++) {
+		// check if key exists
+		if (arr_ptr[i] && arr_ptr[i].key != NULL) {
+			// get offset
+			long offset = arr_ptr[i].offset;
+
+			// move filepointer to the offset we are currently at
+        	if (fseek(p_db_file, offset, SEEK_SET) != 0) continue; // Error seeking
+
+			// Try to read header at current position
+			size_t bytes_read = fread(header_buf, 1, HEADER_LEN, p_db_file);
+			if (bytes_read == 0) continue; // EOF
+			if (bytes_read != HEADER_LEN) continue; // Incomplete read
+
+			deserialize(header_buf, &h); // deserializes header
+	
+			int record_len = h.record_len;
+			int klen = h.key_len;
+			int vlen = h.val_len;
+
+			// store key in key_buf
+			char *key_buf = malloc(klen + 1);	
+			if (!key_buf){
+				fclose(f);
+				unlink(filename_template);
+				return -1;
+			} 
+			ssize_t kb = db_read_at(offset + HEADER_LEN, key_buf, klen);
+			if (kb < 0 || kb != klen) {
+				free(key_buf);
+				continue; // if not read correctly
+			}
+			key_buf[klen] = '\0';	
+
+			// store value in val_buf
+			char *val_buf = malloc(vlen + 1);	
+			if (!val_buf){
+				fclose(f);
+				unlink(filename_template);
+				free(key_buf);
+				return -1;
+			} 
+			ssize_t vb = db_read_at(offset + HEADER_LEN, val_buf, vlen);
+			if (kb < 0 || vb != vlen) {
+				free(val_buf);
+				free(key_buf);
+				continue;  // if not read correctly
+			}
+			val_buf[vlen] = '\0';	
+
+			// get the current offset before writing to new temp file 
+			long current_offset = ftell(f);
+			if (current_offset == -1) {
+                free(val_buf);
+                free(key_buf);
+                fclose(f);
+                unlink(filename_template);
+                return -1;
+			}
+
+
+			if (db_append_raw_specifc(header_buf, HEADER_LEN, f) != 0 ||
+				db_append_raw_specifc(key_buf, klen, f) != 0  ||
+				db_append_raw_specifc(val_buf, vlen, f) != 0) {
+				free(val_buf);
+                free(key_buf);
+                fclose(f);
+                unlink(filename_template);
+				return -1;
+			}
+			
+			arr_ptr[i].offset = current_offset;
+
+			
+			free(val_buf);
+			free(key_buf);
+		}
+		
+	}
+
+	// close the stream which closes the fd
+	fclose(f);
+
+	if (rename(f, path) == -1) {
+		unlink(temp_filename); // Clean up temporary file
+		return -1;
+	}
+
+	unlink(filename_template);
+
+	// Reopen the compacted file
+    p_db_file = fopen(path, "r+b");
+    if (!p_db_file) return -1;
+
+
+	return 0;
 }

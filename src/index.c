@@ -8,6 +8,7 @@ int starting_elements = 31;
 int size = 0;
 int capacity = 31;
 
+// initializes the hash table 
 int init_hash_table(void) {
     arr_ptr = calloc(starting_elements, sizeof(hash_table_val));
     if (!arr_ptr) return -1;
@@ -15,15 +16,17 @@ int init_hash_table(void) {
     capacity = starting_elements;
     return 0;
 }
-
+// safely destroys the hash table and freeing all the strings in the hash table
 void cleanup_hash_table(void) {
     if (arr_ptr) {
         for (int i = 0; i < capacity; i++) {
+	// free all the strings in the arr_ptr[i] struct
             if (arr_ptr[i].key) {
                 free(arr_ptr[i].key);
                 arr_ptr[i].key = NULL;
             }
         }
+	// frees the pointer to the hashtable 
         free(arr_ptr);
         arr_ptr = NULL;
     }
@@ -31,6 +34,7 @@ void cleanup_hash_table(void) {
     capacity = starting_elements;
 }
 
+// gets the hashes for the string
 unsigned long hash(const char *str) {
     if (!str) return 0; // Handle NULL case gracefully
     
@@ -42,6 +46,7 @@ unsigned long hash(const char *str) {
     return hash;
 }
 
+// resize method for my hash table
 void resize(void) {
     int old_capacity = capacity;
     hash_table_val *old_arr_ptr = arr_ptr;
@@ -61,20 +66,24 @@ void resize(void) {
     size = 0;
     
     // Rehash all existing elements
+	// first we are iterating through all the old elements in the old hash table
     for (int i = 0; i < old_capacity; i++) {
+	// in an element exists at the index and its not a tombstone we want to insert it to new hash table
         if (old_arr_ptr[i].key && old_arr_ptr[i].tombstone == 0) {
             // Find a spot in the new table
             unsigned long hash_val = hash(old_arr_ptr[i].key);
             int index = hash_val % capacity;
-            
+
+	    // we are inserting the old value into the new hash table and need to probe and do the same insert functionality	
             for (int j = 0; j < capacity; j++) {
                 int probe_index = (index + j * j) % capacity;
-                
+
+        	// if the spot is empty we just set the new informaiton equal to the old 
                 if (!arr_ptr[probe_index].key) {
-                    // Transfer the key (don't copy)
-                    arr_ptr[probe_index].key = old_arr_ptr[i].key;
+                    arr_ptr[probe_index].key = old_arr_ptr[i].key; // sets the pointer to the key to the new arr_ptr
                     arr_ptr[probe_index].offset = old_arr_ptr[i].offset;
                     arr_ptr[probe_index].tombstone = 0;
+		    free(old_arr_ptr[i].key); // need to free this memory and then mark the pointer as null
                     old_arr_ptr[i].key = NULL; // Prevent double-free
                     size++;
                     break;
@@ -83,7 +92,7 @@ void resize(void) {
         }
     }
     
-    // Clean up the old array - only free keys that weren't transferred
+    // Clean up the old array free keys that weren't transferred
     for (int i = 0; i < old_capacity; i++) {
         if (old_arr_ptr[i].key) {
             free(old_arr_ptr[i].key);
@@ -98,8 +107,9 @@ int get(const char *key) {
     unsigned long hash_val = hash(key);    
     int index = hash_val % capacity;
 
+    // the max number of probes we want to do is the capacity of the array
     for (int i = 0; i < capacity; i++) {
-        int probe_index = (index + i * i) % capacity;	
+        int probe_index = (index + i * i) % capacity;
         if (!arr_ptr[probe_index].key) {
             return -1; // Empty slot found, key doesn't exist
         } 
@@ -137,23 +147,18 @@ int insert(const char *key, long value) {
         
         // if there is a tombstone at this position
         if (arr_ptr[probe_index].tombstone == 1) {
-            // Reuse the existing key memory if it's the same key
-            if (strcmp(arr_ptr[probe_index].key, key) == 0) {
-                arr_ptr[probe_index].offset = value;
-                arr_ptr[probe_index].tombstone = 0;
-                size++;
-                return 0;
-            } else {
                 // Different key, replace it
+            if (strcmp(arr_ptr[probe_index].key, key) != 0) {
                 free(arr_ptr[probe_index].key);
                 arr_ptr[probe_index].key = malloc(strlen(key) + 1);
                 if (!arr_ptr[probe_index].key) return -1;
                 strcpy(arr_ptr[probe_index].key, key);
-                arr_ptr[probe_index].offset = value;
-                arr_ptr[probe_index].tombstone = 0;
-                size++;
-                return 0;
             }
+            // Reuse the existing key memory if it's the same key
+            arr_ptr[probe_index].offset = value;
+	    arr_ptr[probe_index].tombstone = 0;
+	    size++;
+            return 0;
         }
         
         // updating a key if it already exists case (not tombstone)
@@ -176,7 +181,7 @@ int delete(const char *key) {
     for (int i = 0; i < capacity; i++) {
         int probe_index = (index + i * i) % capacity;
         if (!arr_ptr[probe_index].key) {
-            return -1; // this means that no input so you cant make a tombstone
+            return -1; // this means that no possible value so you cant make a tombstone
         }
         if (strcmp(arr_ptr[probe_index].key, key) == 0 && arr_ptr[probe_index].tombstone == 0) {
             arr_ptr[probe_index].tombstone = 1;
