@@ -81,7 +81,7 @@ int db_append_raw(const void *buf, size_t len){
 	return 0;
 }
 
-int db_append_raw_specifc(const void *buf, size_t len, FILE fp){
+int db_append_raw_specifc(const void *buf, size_t len, FILE *fp) {
 	if (!fp || !buf) return -1;
 	// ensure the writes will be going to the end of the file
 	if (fseek(fp, 0, SEEK_END) != 0) {
@@ -216,9 +216,15 @@ int db_open(const char *path) {
         p_db_file = NULL;
         return -1;
     }
+
+	if (db_compact(path) != 0) {
+        cleanup_hash_table();
+        fclose(p_db_file);
+        p_db_file = NULL;
+        return -1;
+	}
     
     return 0;
-
 }
 
 long get_curr_offset() {
@@ -265,7 +271,7 @@ int db_compact(const char *path) {
 	
 	for (int i = 0; i < capacity; i++) {
 		// check if key exists
-		if (arr_ptr[i] && arr_ptr[i].key != NULL) {
+		if (arr_ptr[i].key != NULL) {
 			// get offset
 			long offset = arr_ptr[i].offset;
 
@@ -278,8 +284,7 @@ int db_compact(const char *path) {
 			if (bytes_read != HEADER_LEN) continue; // Incomplete read
 
 			deserialize(header_buf, &h); // deserializes header
-	
-			int record_len = h.record_len;
+			 
 			int klen = h.key_len;
 			int vlen = h.val_len;
 
@@ -305,8 +310,8 @@ int db_compact(const char *path) {
 				free(key_buf);
 				return -1;
 			} 
-			ssize_t vb = db_read_at(offset + HEADER_LEN, val_buf, vlen);
-			if (kb < 0 || vb != vlen) {
+			ssize_t vb = db_read_at(offset + HEADER_LEN+klen, val_buf, vlen);
+			if (vb < 0 || vb != vlen) {
 				free(val_buf);
 				free(key_buf);
 				continue;  // if not read correctly
@@ -346,12 +351,10 @@ int db_compact(const char *path) {
 	// close the stream which closes the fd
 	fclose(f);
 
-	if (rename(f, path) == -1) {
-		unlink(temp_filename); // Clean up temporary file
+	if (rename(filename_template, path) == -1) {
+		unlink(filename_template); // Clean up temporary file
 		return -1;
 	}
-
-	unlink(filename_template);
 
 	// Reopen the compacted file
     p_db_file = fopen(path, "r+b");

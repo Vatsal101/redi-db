@@ -51,7 +51,6 @@ void resize(void) {
     int old_capacity = capacity;
     hash_table_val *old_arr_ptr = arr_ptr;
     
-    // Double the capacity
     capacity = 2 * capacity;
     arr_ptr = calloc(capacity, sizeof(hash_table_val));
     
@@ -62,7 +61,7 @@ void resize(void) {
         return;
     }
     
-    // Reset size for recounting
+    // Reset size 
     size = 0;
     
     // Rehash all existing elements
@@ -83,8 +82,7 @@ void resize(void) {
                     arr_ptr[probe_index].key = old_arr_ptr[i].key; // sets the pointer to the key to the new arr_ptr
                     arr_ptr[probe_index].offset = old_arr_ptr[i].offset;
                     arr_ptr[probe_index].tombstone = 0;
-		    free(old_arr_ptr[i].key); // need to free this memory and then mark the pointer as null
-                    old_arr_ptr[i].key = NULL; // Prevent double-free
+                    old_arr_ptr[i].key = NULL; // had a memory leak here where i was freeing the string which was being pointed to instead of setting the old pointer to null 
                     size++;
                     break;
                 }
@@ -94,10 +92,11 @@ void resize(void) {
     
     // Clean up the old array free keys that weren't transferred
     for (int i = 0; i < old_capacity; i++) {
-        if (old_arr_ptr[i].key) {
+        if (old_arr_ptr[i].key != NULL) {
             free(old_arr_ptr[i].key);
         }
     }
+    
     free(old_arr_ptr);
 }
 
