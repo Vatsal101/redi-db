@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <string.h>
 #include "io.h"
 #include "index.h"
 
@@ -13,6 +14,7 @@ void serialize(record_header_t *r, char *buf) {
 	memcpy(buf + 4, &r->record_type, sizeof(r->record_type));
 	memcpy(buf + 5, &r->key_len, sizeof(r->key_len));
 	memcpy(buf + 7, &r->val_len, sizeof(r->val_len));
+	memcpy(buf + 11, &r->crc, sizeof(r->crc));
 }
 
 // we need to deserialize data so we take the raw byte
@@ -22,8 +24,8 @@ void deserialize(char *buf, record_header_t *r) {
 	memcpy(&r->record_type, buf + 4,sizeof(r->record_type));
 	memcpy(&r->key_len, buf + 5, sizeof(r->key_len));
 	memcpy(&r->val_len, buf + 7, sizeof(r->val_len));
+	memcpy(&r->crc, buf + 11, sizeof(r->crc));
 }
-
 
 void db_close() {
     if (p_db_file) {
@@ -310,7 +312,8 @@ int db_compact(const char *path) {
 				free(key_buf);
 				return -1;
 			} 
-			ssize_t vb = db_read_at(offset + HEADER_LEN+klen, val_buf, vlen);
+
+			ssize_t vb = db_read_at(offset + HEADER_LEN + klen, val_buf, vlen);
 			if (vb < 0 || vb != vlen) {
 				free(val_buf);
 				free(key_buf);
@@ -318,6 +321,14 @@ int db_compact(const char *path) {
 			}
 			val_buf[vlen] = '\0';	
 
+			// checksum check to make sure the data is not corrupted
+			if (h.crc != h.record_type + h.key_len + h.val_len) {
+				free(val_buf);
+				free(key_buf);
+				fclose(f);
+				unlink(filename_template);
+				return -1;
+			}
 			// get the current offset before writing to new temp file 
 			long current_offset = ftell(f);
 			if (current_offset == -1) {
@@ -362,4 +373,24 @@ int db_compact(const char *path) {
 
 
 	return 0;
+}
+
+// simple checksum 
+uint32_t calculate_checksum(uint8_t record_type, const char *key, uint16_t key_len, 
+                           const char *value, uint32_t val_len) {
+    uint32_t checksum = record_type + key_len + val_len;
+    
+    // key content
+    for (uint16_t i = 0; i < key_len; i++) {
+        checksum += (uint32_t)key[i];
+    }
+    
+    // value content unless if tombstone 
+    if (value && val_len > 0) {
+        for (uint32_t i = 0; i < val_len; i++) {
+            checksum += (uint32_t)value[i];
+        }
+    }
+    
+    return checksum;
 }
