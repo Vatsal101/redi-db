@@ -5,7 +5,14 @@
 
 // p_db_file should be binary file 
 static FILE *p_db_file = NULL;
+static FILE *wal_file = NULL;
 
+FILE* get_wal_file() {
+	return wal_file;
+}
+FILE* get_db_file() {
+	return p_db_file;
+}
 // We serialize data to ensure that byte order is consistent
 // we get the raw data within the struct
 void serialize(record_header_t *r, char *buf) {
@@ -30,7 +37,9 @@ void deserialize(char *buf, record_header_t *r) {
 void db_close() {
     if (p_db_file) {
         fclose(p_db_file);
+	fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
     }
     // Clean up hash table when closing database
     cleanup_hash_table();
@@ -41,15 +50,23 @@ int db_create(const char *path) {
 	if (p_db_file) {
         fclose(p_db_file);
     }
+	
+	char path_copy[strlen(path) + 5]; // create new string which has a little more space than the path len
+	strcpy(path_copy, path);  // copy the path into this path_copy
+	char wal_path[] = ".wal";
 
 	p_db_file = fopen(path, "w+b");
+	wal_file = fopen(strcat(path_copy, wal_path), "w+b"); // concat path with the wal ending and create file with that name
+
     if (!p_db_file) return -1;
     
     // Initialize hash table when creating a new database
     cleanup_hash_table(); // Clean up any existing hash table first
     if (init_hash_table() != 0) {
         fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
     }
     
@@ -198,6 +215,7 @@ int db_open(const char *path) {
 	if (!path) return -1;
 	if (p_db_file) {
 		fclose(p_db_file);
+		fclose(wal_file);
 	}; //file already open
 
     p_db_file = fopen(path, "r+b");
@@ -207,22 +225,28 @@ int db_open(const char *path) {
     cleanup_hash_table(); // Clean up any existing hash table first
     if (init_hash_table() != 0) {
         fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
     }
     
     // Rebuild the hash table from the existing data
     if (fill_offset_table() != 0) {
         cleanup_hash_table();
-        fclose(p_db_file);
+		fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
     }
 
 	if (db_compact(path) != 0) {
         cleanup_hash_table();
-        fclose(p_db_file);
+		fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
 	}
     
