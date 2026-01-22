@@ -4,3 +4,6 @@
 
 
 1. add WAl file in io.c so that current code can see we have that we make newwal log files when we also make new db files
+
+
+2. adding wal commands to kv.c which is not too bad but need to make crash recovery code so we need to be able to read the WAL file when rebuilding the db

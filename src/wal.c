@@ -34,7 +34,7 @@ int wal_init() {
 }
 
 int wal_write_content(uint32_t txn, uint8_t wal_type, const char *key, const char *value) {
-    if (!wal_type) return -1;
+    if (!wal_file) return -1;
 
     wal_header record;
 
@@ -48,7 +48,7 @@ int wal_write_content(uint32_t txn, uint8_t wal_type, const char *key, const cha
     record.record_len = WAL_HEADER_LEN + (uint16_t) klen + (uint32_t) vlen;
 
     // calculate checksum including actual data
-    record.crc = type + txn + klen + vlen; // Simple checksum 
+    record.crc = wal_type + txn + klen + vlen; // Simple checksum 
 
     if (key) {
         for (size_t i = 0; i < klen; i++) {
@@ -62,7 +62,7 @@ int wal_write_content(uint32_t txn, uint8_t wal_type, const char *key, const cha
     }
 	// char buffer we use to hold the data
 	char header[WAL_HEADER_LEN];
-	serialize(&record, header);
+	wal_serialize(&record, header);
 
 	// then write to file
 	if (db_append_raw_specifc(header, WAL_HEADER_LEN, wal_file) != 0) return -1;
@@ -75,7 +75,7 @@ int wal_write_content(uint32_t txn, uint8_t wal_type, const char *key, const cha
 }
 
 int wal_start(){
-    wal_write_content(curr_txn_id, WAL_BEGIN, NULL, NULL)
+    return wal_write_content(curr_txn_id, WAL_BEGIN, NULL, NULL)
 }
 
 int wal_end(){
@@ -89,14 +89,29 @@ int wal_end(){
 
 int wal_put(const char *key, const char *value) {
     if (key == NULL || value == NULL || strlen(key) == 0) return -1;
-    return wal_write_content(curr_txn_id, WAL_PUT, key, value)
+    return wal_write_content(curr_txn_id, WAL_PUT, key, value);
 
 }
 
 int wal_delete(const char *key) {
     if (key == NULL || strlen(key) == 0) return -1;
-    return wal_write_content(curr_txn_id, WAL_DEL, key, NULL)
+    return wal_write_content(curr_txn_id, WAL_DEL, key, NULL);
 }
 
+int wal_crash_recovery() {
+    if (!wal_file) return -1;
 
+    db_rewind();
+    char header_buf[HEADER_LEN];
+	record_header_t h;
+    int offset = 0;
 
+    while (1) {
+        ssize_t r = db_read_at(offset ,header_buf, HEADER_LEN);
+        if (r == 0) break; // we are at end of file
+        if (r < 0 & r != HEADER_LEN) {
+            
+        }
+    }
+
+}

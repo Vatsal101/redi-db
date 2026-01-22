@@ -1,5 +1,6 @@
 #include "kv.h"
 #include "index.h"
+#include "wal.h"
 
 int db_delete_table(const char *key) {
 	if (key == NULL || strlen(key) == 0) return -1;
@@ -8,6 +9,11 @@ int db_delete_table(const char *key) {
 	long exisiting_offset = get(key);
 	if (exisiting_offset == -1) return -1; // key doesnt exist
 
+	if (wal_init() != 0) return -1; // ensures we have the WAL file 
+	if ((wal_start()) != 0) return -1; // signifies we have the start of the WAL commit
+	if ((wal_delete(key)) != 0) return -1; // actually deletes the content to the WAL
+	if ((wal_end()) != 0) return -1; // signifies the end of the WAL commit
+
 	record_header_t record;
 	size_t klen = strlen(key);
 
@@ -15,6 +21,7 @@ int db_delete_table(const char *key) {
 	record.key_len = (uint16_t) strlen(key);
 	record.val_len = 0;
 	record.record_len = HEADER_LEN + (uint16_t) klen;
+	
 	// calculate checksum for tombstone 
 	record.crc = calculate_checksum(record.record_type, key, record.key_len, NULL, 0);
 
@@ -38,6 +45,11 @@ int db_delete_table(const char *key) {
 // we take the pointer to the key and a pointer to the value
 int db_put_table(const char *key, const char *value) {
     if (key == NULL || value == NULL || strlen(key) == 0) return -1;
+
+	if (wal_init() != 0) return -1; // ensures we have the WAL file 
+	if ((wal_start()) != 0) return -1; // signifies we have the start of the WAL commit
+	if ((wal_put(key, value)) != 0) return -1; // actually writes the content to the WAL
+	if ((wal_end()) != 0) return -1; // signifies the end of the WAL commit
 
     record_header_t record;
     size_t klen = strlen(key);
@@ -117,7 +129,7 @@ char *db_get_table(const char *key) {
 
 	// read the value
 	char *val_buf = malloc(h.val_len + 1);
-	    if (!val_buf) {
+	if (!val_buf) {
         return NULL;
     }	
     
