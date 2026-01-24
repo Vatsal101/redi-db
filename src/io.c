@@ -2,6 +2,7 @@
 #include <string.h>
 #include "io.h"
 #include "index.h"
+#include <fcntl.h> 
 
 // p_db_file should be binary file 
 static FILE *p_db_file = NULL;
@@ -249,6 +250,18 @@ int db_open(const char *path) {
         wal_file = NULL;
         return -1;
 	}
+    
+    // Initialize WAL
+    if (wal_init() != 0) {
+        fclose(p_db_file);
+        return -1;
+    }
+    
+    // Perform WAL recovery
+    if (wal_crash_recovery() != 0) {
+        fclose(p_db_file);
+        return -1;
+    }
     
     return 0;
 }

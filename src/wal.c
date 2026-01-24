@@ -18,7 +18,7 @@ void wal_deserialize(char *buf, wal_header *r) {
 	if (buf == NULL || r == NULL) return;
 	memcpy(&r->record_len, buf, sizeof(r->record_len));
 	memcpy(&r->wal_type, buf + 4,sizeof(r->wal_type));
-	memcpy(&r->txn, buf + 5, sizeof(r->txn));
+	memcpy(&r->txn, buf + 5, sizeof(r->txn)); 
 	memcpy(&r->key_len, buf + 9, sizeof(r->key_len));
 	memcpy(&r->val_len, buf + 11, sizeof(r->val_len));
 	memcpy(&r->crc, buf + 15, sizeof(r->crc));
@@ -75,7 +75,7 @@ int wal_write_content(uint32_t txn, uint8_t wal_type, const char *key, const cha
 }
 
 int wal_start(){
-    return wal_write_content(curr_txn_id, WAL_BEGIN, NULL, NULL)
+    return wal_write_content(curr_txn_id, WAL_BEGIN, NULL, NULL);
 }
 
 int wal_end(){
@@ -98,20 +98,104 @@ int wal_delete(const char *key) {
     return wal_write_content(curr_txn_id, WAL_DEL, key, NULL);
 }
 
+int wal_flush() {
+    if (!wal_file) return -1;
+    
+    // Truncate WAL file after successful recovery/compaction
+    if (fflush(wal_file) != 0) return -1;
+    if (ftruncate(fileno(wal_file), 0) != 0) return -1;
+    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;
+    
+    return 0;
+}
+
+
+
 int wal_crash_recovery() {
     if (!wal_file) return -1;
 
-    db_rewind();
-    char header_buf[HEADER_LEN];
-	record_header_t h;
-    int offset = 0;
-
-    while (1) {
-        ssize_t r = db_read_at(offset ,header_buf, HEADER_LEN);
-        if (r == 0) break; // we are at end of file
-        if (r < 0 & r != HEADER_LEN) {
-            
+    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;     
+    
+    char header_buf[WAL_HEADER_LEN];
+    
+    typedef struct {
+        uint32_t txn_id;
+        int has_commit;
+    } txn_status_t;
+    
+    txn_status_t transactions[1000]; // simple array for now
+    int txn_count = 0;
+    
+    // scan the WAL to find the txns that are begun and committed successfully
+    while (fread(header_buf, 1, WAL_HEADER_LEN, wal_file) == WAL_HEADER_LEN) {
+        wal_header h;
+        wal_deserialize(header_buf, &h);
+        
+        if (fseek(wal_file, h.key_len + h.val_len, SEEK_CUR) != 0) break;
+        
+        if (h.wal_type == WAL_BEGIN) {
+            transactions[txn_count].txn_id = h.txn;
+            transactions[txn_count].has_commit = 0;
+            txn_count++;
+        } else if (h.wal_type == WAL_COMMIT) {
+            for (int i = 0; i < txn_count; i++) {
+                if (transactions[i].txn_id == h.txn) {
+                    transactions[i].has_commit = 1;
+                    break;
+                }
+            }
         }
     }
-
+    
+    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;
+    
+    // implement the commits by checking if the txn has been committed
+    while (fread(header_buf, 1, WAL_HEADER_LEN, wal_file) == WAL_HEADER_LEN) {
+        wal_header h;
+        wal_deserialize(header_buf, &h);
+        
+        char *key = NULL, *value = NULL;
+        
+        if (h.key_len > 0) {
+            key = malloc(h.key_len + 1);
+            if (!key || fread(key, 1, h.key_len, wal_file) != h.key_len) {
+                free(key);
+                break;
+            }
+            key[h.key_len] = '\0';
+        }
+        
+        if (h.val_len > 0) {
+            value = malloc(h.val_len + 1);
+            if (!value || fread(value, 1, h.val_len, wal_file) != h.val_len) {
+                free(key);
+                free(value);
+                break;
+            }
+            value[h.val_len] = '\0';
+        }
+        
+        // check if transaction is complete
+        int is_complete = 0;
+        for (int i = 0; i < txn_count; i++) {
+            if (transactions[i].txn_id == h.txn && transactions[i].has_commit) {
+                is_complete = 1;
+                break;
+            }
+        }
+        
+        // replay operations from complete transactions
+        if (is_complete && (h.wal_type == WAL_PUT || h.wal_type == WAL_DEL)) {
+            if (h.wal_type == WAL_PUT && key && value) {
+                db_put_table_internal(key, value);
+            } else if (h.wal_type == WAL_DEL && key) {
+                db_delete_table_internal(key);
+            }
+        }
+        
+        free(key);
+        free(value);
+    }
+    
+    return 0;
 }

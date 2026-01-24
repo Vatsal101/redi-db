@@ -1,7 +1,7 @@
 #ifndef WAL_H
 #define WAL_H
 
-#include "io.h"
+#include "kv.h"
 
 typedef enum {
     WAL_BEGIN = 1,
