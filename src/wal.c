@@ -24,7 +24,6 @@ void wal_deserialize(char *buf, wal_header *r) {
 	memcpy(&r->crc, buf + 15, sizeof(r->crc));
 }
 
-
 int wal_init() {
    if (get_wal_file() != NULL) {
         wal_file = get_wal_file();
@@ -109,8 +108,6 @@ int wal_flush() {
     return 0;
 }
 
-
-
 int wal_crash_recovery() {
     if (!wal_file) return -1;
 
@@ -118,22 +115,23 @@ int wal_crash_recovery() {
     
     char header_buf[WAL_HEADER_LEN];
     
+    // define new struct that allows you to store information about the txn and whether or not it was committed succesfuly
+    // I want to hold these structs in a hash table but do not know how to make another hashtable that supports keys to be integers
     typedef struct {
         uint32_t txn_id;
         int has_commit;
     } txn_status_t;
     
-    txn_status_t transactions[1000]; // simple array for now
+    txn_status_t transactions[1024]; // simple array for now
     int txn_count = 0;
     
     // scan the WAL to find the txns that are begun and committed successfully
     while (fread(header_buf, 1, WAL_HEADER_LEN, wal_file) == WAL_HEADER_LEN) {
         wal_header h;
         wal_deserialize(header_buf, &h);
+        if (fseek(wal_file, h.key_len + h.val_len, SEEK_CUR) != 0) break; // moves the file pointer to the next wal_header and also checks if we reached EOF
         
-        if (fseek(wal_file, h.key_len + h.val_len, SEEK_CUR) != 0) break;
-        
-        if (h.wal_type == WAL_BEGIN) {
+        if (h.wal_type == WAL_BEGIN) { // if the log type is WAL_Begin that means we started a new change we want to document that to ensure that if there is commit then we know its good
             transactions[txn_count].txn_id = h.txn;
             transactions[txn_count].has_commit = 0;
             txn_count++;
@@ -147,7 +145,7 @@ int wal_crash_recovery() {
         }
     }
     
-    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;
+    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1; // set the file pointer back to the top
     
     // implement the commits by checking if the txn has been committed
     while (fread(header_buf, 1, WAL_HEADER_LEN, wal_file) == WAL_HEADER_LEN) {
@@ -184,7 +182,7 @@ int wal_crash_recovery() {
             }
         }
         
-        // replay operations from complete transactions
+        // replay operations from complete transactions ( logic to know when to replay transactions)
         if (is_complete && (h.wal_type == WAL_PUT || h.wal_type == WAL_DEL)) {
             if (h.wal_type == WAL_PUT && key && value) {
                 db_put_table_internal(key, value);
