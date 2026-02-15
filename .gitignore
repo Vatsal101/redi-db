@@ -1,0 +1,30 @@
+# Compiled object files
+obj/*.o
+obj_asan/*.o
+build/*.o
+
+# Executables
+bin/*
+bin_asan/*
+build/simpledb
+
+# Database files
+*.db
+*.db.wal
+
+# Debug symbol files (macOS)
+*.dSYM/
+
+# Editor/IDE files
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+/tmp/
+*.tmp
+
+# Core dumps
+core

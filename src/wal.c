@@ -1,4 +1,5 @@
 #include "wal.h"
+#include <unistd.h>
 
 static FILE* wal_file = NULL;
 int curr_txn_id = 1;
@@ -36,82 +37,77 @@ int wal_write_content(uint32_t txn, uint8_t wal_type, const char *key, const cha
     if (!wal_file) return -1;
 
     wal_header record;
-
     size_t klen = (key && wal_type != WAL_BEGIN && wal_type != WAL_COMMIT) ? strlen(key) : 0;
     size_t vlen = (value && wal_type == WAL_PUT) ? strlen(value) : 0;
 
+    // Validate sizes to prevent overflow
+    if (klen > UINT16_MAX || vlen > UINT32_MAX) return -1;
+    
     record.wal_type = wal_type;
-    record.key_len = (uint16_t) klen;
-    record.val_len = (uint32_t) vlen;
+    record.key_len = (uint16_t)klen;
+    record.val_len = (uint32_t)vlen;
     record.txn = txn;
-    record.record_len = WAL_HEADER_LEN + (uint16_t) klen + (uint32_t) vlen;
-
-    // calculate checksum including actual data
-    record.crc = wal_type + txn + klen + vlen; // Simple checksum 
-
+    record.record_len = WAL_HEADER_LEN + klen + vlen;
+    
+    // Stronger checksum including magic number
+    record.crc = 0xDEADBEEF ^ wal_type ^ txn ^ klen ^ vlen;
     if (key) {
         for (size_t i = 0; i < klen; i++) {
-            record.crc += (uint32_t)key[i];
+            record.crc ^= ((uint32_t)key[i] << (i % 24));
         }
     }
     if (value) {
         for (size_t i = 0; i < vlen; i++) {
-            record.crc += (uint32_t)value[i];
+            record.crc ^= ((uint32_t)value[i] << ((i + klen) % 24));
         }
     }
-	// char buffer we use to hold the data
-	char header[WAL_HEADER_LEN];
-	wal_serialize(&record, header);
 
-	// then write to file
-	if (db_append_raw_specifc(header, WAL_HEADER_LEN, wal_file) != 0) return -1;
-	if (klen > 0 && db_append_raw_specifc(key, klen, wal_file) != 0) return -1;
-	if (vlen > 0 && db_append_raw_specifc(value, vlen, wal_file) != 0) return -1;
-
-    if (fflush(wal_file) != 0) return -1;	
-
-	return 0;
-}
-
-int wal_start(){
-    return wal_write_content(curr_txn_id, WAL_BEGIN, NULL, NULL);
-}
-
-int wal_end(){
-    if (wal_write_content(curr_txn_id, WAL_COMMIT, NULL, NULL) != 0) {
+    size_t total_len = WAL_HEADER_LEN + klen + vlen; 
+    char *full_record = malloc(total_len); // this is the full record including WAL_HEADER, Key, value
+    if (!full_record) return -1;
+    
+    wal_serialize(&record, full_record);
+    if (key) memcpy(full_record + WAL_HEADER_LEN, key, klen);
+    if (value) memcpy(full_record + WAL_HEADER_LEN + klen, value, vlen);
+    
+    // Single atomic write
+    if (db_append_raw_specifc(full_record, total_len, wal_file) != 0) {
+        free(full_record);
         return -1;
     }
-
-    curr_txn_id++;
-    return 0;
-}
-
-int wal_put(const char *key, const char *value) {
-    if (key == NULL || value == NULL || strlen(key) == 0) return -1;
-    return wal_write_content(curr_txn_id, WAL_PUT, key, value);
-
-}
-
-int wal_delete(const char *key) {
-    if (key == NULL || strlen(key) == 0) return -1;
-    return wal_write_content(curr_txn_id, WAL_DEL, key, NULL);
-}
-
-int wal_flush() {
-    if (!wal_file) return -1;
     
-    // Truncate WAL file after successful recovery/compaction
+    free(full_record);
+    
     if (fflush(wal_file) != 0) return -1;
-    if (ftruncate(fileno(wal_file), 0) != 0) return -1;
-    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;
+    if (fsync(fileno(wal_file)) != 0) return -1;  // Actually force to disk
     
     return 0;
+}
+
+static int validate_wal_record(wal_header *h, char *key, char *value) {
+    if (h->record_len < WAL_HEADER_LEN || h->record_len > 1024 * 1024) return 0;
+    if (h->wal_type < WAL_BEGIN || h->wal_type > WAL_COMMIT) return 0;
+    if (h->record_len != WAL_HEADER_LEN + h->key_len + h->val_len) return 0;
+    
+    uint32_t expected_crc = 0xDEADBEEF ^ h->wal_type ^ h->txn ^ h->key_len ^ h->val_len;
+    if (key) {
+        for (int i = 0; i < h->key_len; i++) {
+            expected_crc ^= ((uint32_t)key[i] << (i % 24));
+        }
+    }
+    if (value) {
+        for (int i = 0; i < h->val_len; i++) {
+            expected_crc ^= ((uint32_t)value[i] << ((i + h->key_len) % 24));
+        }
+    }
+    
+    return expected_crc == h->crc;
 }
 
 int wal_crash_recovery() {
     if (!wal_file) return -1;
-
-    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;     
+    // sets the file pointer to the top
+    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;
     
     char header_buf[WAL_HEADER_LEN];
     
@@ -122,38 +118,31 @@ int wal_crash_recovery() {
         int has_commit;
     } txn_status_t;
     
-    txn_status_t transactions[1024]; // simple array for now
+    txn_status_t transactions[1024];
     int txn_count = 0;
     
-    // scan the WAL to find the txns that are begun and committed successfully
+    // FIRST PASS: Validate all records and find commits
     while (fread(header_buf, 1, WAL_HEADER_LEN, wal_file) == WAL_HEADER_LEN) {
         wal_header h;
         wal_deserialize(header_buf, &h);
-        if (fseek(wal_file, h.key_len + h.val_len, SEEK_CUR) != 0) break; // moves the file pointer to the next wal_header and also checks if we reached EOF
         
-        if (h.wal_type == WAL_BEGIN) { // if the log type is WAL_Begin that means we started a new change we want to document that to ensure that if there is commit then we know its good
-            transactions[txn_count].txn_id = h.txn;
-            transactions[txn_count].has_commit = 0;
-            txn_count++;
-        } else if (h.wal_type == WAL_COMMIT) {
-            for (int i = 0; i < txn_count; i++) {
-                if (transactions[i].txn_id == h.txn) {
-                    transactions[i].has_commit = 1;
-                    break;
-                }
-            }
+        // PARTIAL WRITE DETECTION
+        if (h.record_len < WAL_HEADER_LEN || h.record_len > 1024 * 1024) {
+            break; // Invalid record, stop processing
         }
-    }
-    
-    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1; // set the file pointer back to the top
-    
-    // implement the commits by checking if the txn has been committed
-    while (fread(header_buf, 1, WAL_HEADER_LEN, wal_file) == WAL_HEADER_LEN) {
-        wal_header h;
-        wal_deserialize(header_buf, &h);
         
+        // Check if we can read the full record
+        long pos = ftell(wal_file);
+        if (fseek(wal_file, 0, SEEK_END) != 0) break;
+        long file_end = ftell(wal_file);
+        if (fseek(wal_file, pos, SEEK_SET) != 0) break;
+        
+        if (pos + h.key_len + h.val_len > file_end) {
+            break; // Partial record at end of file
+        }
+        
+        // Read and validate key/value data
         char *key = NULL, *value = NULL;
-        
         if (h.key_len > 0) {
             key = malloc(h.key_len + 1);
             if (!key || fread(key, 1, h.key_len, wal_file) != h.key_len) {
@@ -173,7 +162,68 @@ int wal_crash_recovery() {
             value[h.val_len] = '\0';
         }
         
-        // check if transaction is complete
+        if (!validate_wal_record(&h, key, value)) {
+            free(key);
+            free(value);
+            break; // Corrupted record
+        }
+        
+        // Track transaction states
+        if (h.wal_type == WAL_BEGIN && txn_count < 1024) {
+            transactions[txn_count].txn_id = h.txn;
+            transactions[txn_count].has_commit = 0;
+            txn_count++;
+        } else if (h.wal_type == WAL_COMMIT) {
+            for (int i = 0; i < txn_count; i++) {
+                if (transactions[i].txn_id == h.txn) {
+                    transactions[i].has_commit = 1;
+                    break;
+                }
+            }
+        }
+        
+        free(key);
+        free(value);
+    }
+    
+    // SECOND PASS: Replay only validated, committed transactions
+    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;
+    
+    // implement the commits by checking if the txn has been committed
+    while (fread(header_buf, 1, WAL_HEADER_LEN, wal_file) == WAL_HEADER_LEN) {
+        wal_header h;
+        wal_deserialize(header_buf, &h);
+        
+        // Re-validate (defensive programming)
+        if (h.record_len < WAL_HEADER_LEN) break;
+        
+        char *key = NULL, *value = NULL;
+        if (h.key_len > 0) {
+            key = malloc(h.key_len + 1);
+            if (!key || fread(key, 1, h.key_len, wal_file) != h.key_len) {
+                free(key);
+                break;
+            }
+            key[h.key_len] = '\0';
+        }
+        
+        if (h.val_len > 0) {
+            value = malloc(h.val_len + 1);
+            if (!value || fread(value, 1, h.val_len, wal_file) != h.val_len) {
+                free(key);
+                free(value);
+                break;
+            }
+            value[h.val_len] = '\0';
+        }
+        
+        if (!validate_wal_record(&h, key, value)) {
+            free(key);
+            free(value);
+            break;
+        }
+        
+        // Check if transaction is committed
         int is_complete = 0;
         for (int i = 0; i < txn_count; i++) {
             if (transactions[i].txn_id == h.txn && transactions[i].has_commit) {
@@ -196,4 +246,47 @@ int wal_crash_recovery() {
     }
     
     return 0;
+}
+
+// SAFE COMPACTION: Only clear WAL after ensuring consistency
+int wal_safe_compact() {
+    if (!wal_file) return -1;
+    
+    // Force main database to disk first
+    FILE *main_db = get_db_file();
+    if (main_db) {
+        if (fflush(main_db) != 0) return -1;
+        if (fsync(fileno(main_db)) != 0) return -1;
+    }
+    
+    // Now safe to clear WAL
+    if (fflush(wal_file) != 0) return -1;
+    if (fsync(fileno(wal_file)) != 0) return -1;
+    if (ftruncate(fileno(wal_file), 0) != 0) return -1;
+    if (fseek(wal_file, 0, SEEK_SET) != 0) return -1;
+    
+    return 0;
+}
+
+int wal_start() {
+    return wal_write_content(curr_txn_id, WAL_BEGIN, NULL, NULL);
+}
+
+int wal_end() {
+    int result = wal_write_content(curr_txn_id, WAL_COMMIT, NULL, NULL);
+    if (result == 0) {
+        curr_txn_id++; 
+    }
+    return result;
+}
+
+int wal_put(const char *key, const char *value) {
+    if (key == NULL || value == NULL || strlen(key) == 0) return -1;
+    return wal_write_content(curr_txn_id, WAL_PUT, key, value);
+
+}
+
+int wal_delete(const char *key) {
+    if (key == NULL || strlen(key) == 0) return -1;
+    return wal_write_content(curr_txn_id, WAL_DEL, key, NULL);
 }

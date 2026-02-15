@@ -2,6 +2,7 @@
 #include <string.h>
 #include "io.h"
 #include "index.h"
+#include "wal.h"
 #include <fcntl.h> 
 
 // p_db_file should be binary file 
@@ -98,6 +99,9 @@ int db_append_raw(const void *buf, size_t len){
 		return -1;	
 	}
 
+    if (fsync(fileno(p_db_file)) != 0) {
+        return -1;
+    }
 	return 0;
 }
 
@@ -196,7 +200,10 @@ int fill_offset_table() {
         // This handles both regular records and tombstones
         if (h.record_type == 1) {
             // Regular record - insert or update
-            insert(key_buf, current_pos);
+			if (insert(key_buf, current_pos) != 0) {
+                free(key_buf);
+                return -1;
+            }
         } else if (h.record_type == 2) {
             // Tombstone - remove from hash table
             delete(key_buf);
@@ -213,14 +220,27 @@ int fill_offset_table() {
 }
 
 int db_open(const char *path) {
-	if (!path) return -1;
-	if (p_db_file) {
-		fclose(p_db_file);
-		fclose(wal_file);
-	}; //file already open
+    if (!path) return -1;
+    if (p_db_file) {
+        fclose(p_db_file);
+        if (wal_file) fclose(wal_file); // Add null check
+    }
 
     p_db_file = fopen(path, "r+b");
     if (!p_db_file) return -1;
+    
+    char wal_path[strlen(path) + 5];
+    strcpy(wal_path, path);
+    strcat(wal_path, ".wal");
+    wal_file = fopen(wal_path, "r+b");
+    if (!wal_file) {
+        // Create WAL file if it doesn't exist
+        wal_file = fopen(wal_path, "w+b");
+        if (!wal_file) {
+            fclose(p_db_file);
+            return -1;
+        }
+    }
     
     // Initialize hash table when opening an existing database
     cleanup_hash_table(); // Clean up any existing hash table first
@@ -242,15 +262,6 @@ int db_open(const char *path) {
         return -1;
     }
 
-	if (db_compact(path) != 0) {
-        cleanup_hash_table();
-		fclose(p_db_file);
-		fclose(wal_file);
-        p_db_file = NULL;
-        wal_file = NULL;
-        return -1;
-	}
-    
     // Initialize WAL
     if (wal_init() != 0) {
         fclose(p_db_file);
@@ -262,7 +273,20 @@ int db_open(const char *path) {
         fclose(p_db_file);
         return -1;
     }
-    
+ 
+	if (db_compact(path) != 0) {
+        cleanup_hash_table();
+		fclose(p_db_file);
+		fclose(wal_file);
+        p_db_file = NULL;
+        wal_file = NULL;
+        return -1;
+	}
+   
+	if (wal_safe_compact() != 0) {
+		return -1;
+	}	
+
     return 0;
 }
 
@@ -308,6 +332,7 @@ int db_compact(const char *path) {
 	char header_buf[HEADER_LEN];
 	record_header_t h;
 	
+	printf("It is working until before the for loop which means files were created properly")
 	for (int i = 0; i < capacity; i++) {
 		// check if key exists
 		if (arr_ptr[i].key != NULL) {
@@ -394,6 +419,7 @@ int db_compact(const char *path) {
 			free(key_buf);
 		}
 		
+	printf("It is working until after the for loop")
 	}
 
 	// close the stream which closes the fd
