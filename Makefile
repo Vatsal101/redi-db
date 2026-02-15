@@ -87,6 +87,10 @@ test_debug: $(BINDIR)/test_index_debug
 	@echo "Running debug test..."
 	./$(BINDIR)/test_index_debug
 
+test_wal: $(BINDIR)/test_wal
+	@echo "Running wal test"
+	./$(BINDIR)/test_wal
+
 # Address Sanitizer test targets
 asan-test_index: $(ASAN_BINDIR)/test_index
 	@echo "Running index tests with AddressSanitizer..."
@@ -286,6 +290,8 @@ $(ASAN_OBJDIR)/main.o: $(INCDIR)/kv.h $(INCDIR)/io.h $(INCDIR)/index.h
 $(BINDIR)/test_index_debug: $(OBJDIR)/kv.o $(OBJDIR)/io.o $(OBJDIR)/index.o
 $(BINDIR)/test_index: $(OBJDIR)/kv.o $(OBJDIR)/io.o $(OBJDIR)/index.o
 $(BINDIR)/benchmark_index: $(OBJDIR)/kv.o $(OBJDIR)/io.o $(OBJDIR)/index.o
+$(BINDIR)/test_wal: $(OBJDIR)/kv.o $(OBJDIR)/io.o $(OBJDIR)/index.o $(OBJDIR)/wal.o
+
 
 $(ASAN_BINDIR)/test_index_debug: $(ASAN_OBJDIR)/kv.o $(ASAN_OBJDIR)/io.o $(ASAN_OBJDIR)/index.o
 $(ASAN_BINDIR)/test_index: $(ASAN_OBJDIR)/kv.o $(ASAN_OBJDIR)/io.o $(ASAN_OBJDIR)/index.o

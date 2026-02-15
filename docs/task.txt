@@ -1,0 +1,9 @@
+- on creation of db need to also make a db.wal file along with to act as the WAL file.
+- need to implement WAL by first figuring out to structure the WAL but it is not that hard we can use some structs for that similar to our file storage we currently have
+- then we can actually build out the code for our adding to our WAL, im thinking we first add to the WAL then if that has gone well we can immediately flush that to add it to the main data store and if we crash during this part we stil have the WAL to ensure data durability and if we dont crash we can successfuly write this data
+
+
+1. add WAl file in io.c so that current code can see we have that we make newwal log files when we also make new db files
+
+
+2. adding wal commands to kv.c which is not too bad but need to make crash recovery code so we need to be able to read the WAL file when rebuilding the db

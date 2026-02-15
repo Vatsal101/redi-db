@@ -1,10 +1,20 @@
 #include <unistd.h>
+#include <string.h>
 #include "io.h"
 #include "index.h"
+#include "wal.h"
+#include <fcntl.h> 
 
-// p_db_file should be binary file 
+// p_db_file should be binary file
 static FILE *p_db_file = NULL;
+static FILE *wal_file = NULL;
 
+FILE* get_wal_file() {
+	return wal_file;
+}
+FILE* get_db_file() {
+	return p_db_file;
+}
 // We serialize data to ensure that byte order is consistent
 // we get the raw data within the struct
 void serialize(record_header_t *r, char *buf) {
@@ -13,6 +23,7 @@ void serialize(record_header_t *r, char *buf) {
 	memcpy(buf + 4, &r->record_type, sizeof(r->record_type));
 	memcpy(buf + 5, &r->key_len, sizeof(r->key_len));
 	memcpy(buf + 7, &r->val_len, sizeof(r->val_len));
+	memcpy(buf + 11, &r->crc, sizeof(r->crc));
 }
 
 // we need to deserialize data so we take the raw byte
@@ -22,13 +33,15 @@ void deserialize(char *buf, record_header_t *r) {
 	memcpy(&r->record_type, buf + 4,sizeof(r->record_type));
 	memcpy(&r->key_len, buf + 5, sizeof(r->key_len));
 	memcpy(&r->val_len, buf + 7, sizeof(r->val_len));
+	memcpy(&r->crc, buf + 11, sizeof(r->crc));
 }
-
 
 void db_close() {
     if (p_db_file) {
         fclose(p_db_file);
+	fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
     }
     // Clean up hash table when closing database
     cleanup_hash_table();
@@ -39,15 +52,23 @@ int db_create(const char *path) {
 	if (p_db_file) {
         fclose(p_db_file);
     }
+	
+	char path_copy[strlen(path) + 5]; // create new string which has a little more space than the path len
+	strcpy(path_copy, path);  // copy the path into this path_copy
+	char wal_path[] = ".wal";
 
 	p_db_file = fopen(path, "w+b");
+	wal_file = fopen(strcat(path_copy, wal_path), "w+b"); // concat path with the wal ending and create file with that name
+
     if (!p_db_file) return -1;
     
     // Initialize hash table when creating a new database
     cleanup_hash_table(); // Clean up any existing hash table first
     if (init_hash_table() != 0) {
         fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
     }
     
@@ -78,6 +99,9 @@ int db_append_raw(const void *buf, size_t len){
 		return -1;	
 	}
 
+    if (fsync(fileno(p_db_file)) != 0) {
+        return -1;
+    }
 	return 0;
 }
 
@@ -176,7 +200,10 @@ int fill_offset_table() {
         // This handles both regular records and tombstones
         if (h.record_type == 1) {
             // Regular record - insert or update
-            insert(key_buf, current_pos);
+			if (insert(key_buf, current_pos) != 0) {
+                free(key_buf);
+                return -1;
+            }
         } else if (h.record_type == 2) {
             // Tombstone - remove from hash table
             delete(key_buf);
@@ -193,37 +220,73 @@ int fill_offset_table() {
 }
 
 int db_open(const char *path) {
-	if (!path) return -1;
-	if (p_db_file) {
-		fclose(p_db_file);
-	}; //file already open
+    if (!path) return -1;
+    if (p_db_file) {
+        fclose(p_db_file);
+        if (wal_file) fclose(wal_file); // Add null check
+    }
 
     p_db_file = fopen(path, "r+b");
     if (!p_db_file) return -1;
+    
+    char wal_path[strlen(path) + 5];
+    strcpy(wal_path, path);
+    strcat(wal_path, ".wal");
+    wal_file = fopen(wal_path, "r+b");
+    if (!wal_file) {
+        // Create WAL file if it doesn't exist
+        wal_file = fopen(wal_path, "w+b");
+        if (!wal_file) {
+            fclose(p_db_file);
+            return -1;
+        }
+    }
     
     // Initialize hash table when opening an existing database
     cleanup_hash_table(); // Clean up any existing hash table first
     if (init_hash_table() != 0) {
         fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
     }
     
     // Rebuild the hash table from the existing data
     if (fill_offset_table() != 0) {
         cleanup_hash_table();
-        fclose(p_db_file);
+		fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
     }
 
+    // Initialize WAL
+    if (wal_init() != 0) {
+        fclose(p_db_file);
+        return -1;
+    }
+    
+    // Perform WAL recovery
+    if (wal_crash_recovery() != 0) {
+        fclose(p_db_file);
+        return -1;
+    }
+ 
 	if (db_compact(path) != 0) {
         cleanup_hash_table();
-        fclose(p_db_file);
+		fclose(p_db_file);
+		fclose(wal_file);
         p_db_file = NULL;
+        wal_file = NULL;
         return -1;
 	}
-    
+   
+	if (wal_safe_compact() != 0) {
+		return -1;
+	}	
+
     return 0;
 }
 
@@ -310,7 +373,8 @@ int db_compact(const char *path) {
 				free(key_buf);
 				return -1;
 			} 
-			ssize_t vb = db_read_at(offset + HEADER_LEN+klen, val_buf, vlen);
+
+			ssize_t vb = db_read_at(offset + HEADER_LEN + klen, val_buf, vlen);
 			if (vb < 0 || vb != vlen) {
 				free(val_buf);
 				free(key_buf);
@@ -318,8 +382,17 @@ int db_compact(const char *path) {
 			}
 			val_buf[vlen] = '\0';	
 
+			// checksum check to make sure the data is not corrupted
+			if (h.crc != calculate_checksum(h.record_type, key_buf, h.key_len, val_buf, h.val_len)) {
+				free(val_buf);
+				free(key_buf);
+				fclose(f);
+				unlink(filename_template);
+				return -1;
+			}
 			// get the current offset before writing to new temp file 
 			long current_offset = ftell(f);
+
 			if (current_offset == -1) {
                 free(val_buf);
                 free(key_buf);
@@ -360,6 +433,25 @@ int db_compact(const char *path) {
     p_db_file = fopen(path, "r+b");
     if (!p_db_file) return -1;
 
-
 	return 0;
+}
+
+// simple checksum 
+uint32_t calculate_checksum(uint8_t record_type, const char *key, uint16_t key_len, 
+                           const char *value, uint32_t val_len) {
+    uint32_t checksum = record_type + key_len + val_len;
+    
+    // key content
+    for (uint16_t i = 0; i < key_len; i++) {
+        checksum += (uint32_t)key[i];
+    }
+    
+    // value content unless if tombstone 
+    if (value && val_len > 0) {
+        for (uint32_t i = 0; i < val_len; i++) {
+            checksum += (uint32_t)value[i];
+        }
+    }
+    
+    return checksum;
 }

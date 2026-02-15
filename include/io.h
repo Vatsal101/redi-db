@@ -12,23 +12,37 @@ typedef struct {
     uint8_t record_type;  // 1 = regular record, 2 = tombstone
     uint16_t key_len;     // Length of key
     uint32_t val_len;     // Length of value
+    uint32_t crc;         // checksum = record_type + key_len + val_len
 } record_header_t;
 
 // Header size calculation
-#define HEADER_LEN (sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t))
+#define HEADER_LEN (sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t) + sizeof(uint32_t))
 
 // Serialization functions
 void serialize(record_header_t *r, char *buf);
 void deserialize(char *buf, record_header_t *r);
 
-// Database file operations
+// Database open/close/create operations
 int db_create(const char *path);
 int db_open(const char *path);
 void db_close(void);
+FILE* get_db_file();
+
+// Database file appending/reading operations
 int db_append_raw(const void *buf, size_t len);
+int db_append_raw_specifc(const void *buf, size_t len, FILE * fp);
 int db_read_at(long offset, void *buf, size_t len);
+
+// File pointer manipulation and information
 int db_rewind(void);
 long get_curr_offset(void);
+
+// Misallencous (index table, compaction, wal_file, db_file)
 int fill_offset_table(void);
 int db_compact(const char *path);
+FILE* get_wal_file();
+
+
+uint32_t calculate_checksum(uint8_t record_type, const char *key, uint16_t key_len, const char *value, uint32_t val_len);
+
 #endif // IO_H
