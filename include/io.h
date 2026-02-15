@@ -26,11 +26,11 @@ void deserialize(char *buf, record_header_t *r);
 int db_create(const char *path);
 int db_open(const char *path);
 void db_close(void);
-int get_db_file();
+FILE* get_db_file();
 
 // Database file appending/reading operations
 int db_append_raw(const void *buf, size_t len);
-int db_append_raw_specifc(const void *buf, size_t len, FILE * fp)
+int db_append_raw_specifc(const void *buf, size_t len, FILE * fp);
 int db_read_at(long offset, void *buf, size_t len);
 
 // File pointer manipulation and information
@@ -40,7 +40,7 @@ long get_curr_offset(void);
 // Misallencous (index table, compaction, wal_file, db_file)
 int fill_offset_table(void);
 int db_compact(const char *path);
-int get_wal_file();
+FILE* get_wal_file();
 
 
 uint32_t calculate_checksum(uint8_t record_type, const char *key, uint16_t key_len, const char *value, uint32_t val_len);

@@ -60,6 +60,7 @@ int db_put_table(const char *key, const char *value) {
     // calculate checksum including actual data
     record.crc = calculate_checksum(record.record_type, key, record.key_len, value, record.val_len);
 
+
 	// char buffer we use to hold the data
 	char header[HEADER_LEN];
 	

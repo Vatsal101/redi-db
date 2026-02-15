@@ -27,6 +27,8 @@ int wal_start();
 int wal_end();
 int wal_put(const char *key, const char *value);
 int wal_delete(const char *key);
+int wal_safe_compact();
+int wal_crash_recovery();
 
 extern int curr_txn_id;
 

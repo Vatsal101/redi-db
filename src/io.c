@@ -5,7 +5,7 @@
 #include "wal.h"
 #include <fcntl.h> 
 
-// p_db_file should be binary file 
+// p_db_file should be binary file
 static FILE *p_db_file = NULL;
 static FILE *wal_file = NULL;
 
@@ -332,7 +332,6 @@ int db_compact(const char *path) {
 	char header_buf[HEADER_LEN];
 	record_header_t h;
 	
-	printf("It is working until before the for loop which means files were created properly")
 	for (int i = 0; i < capacity; i++) {
 		// check if key exists
 		if (arr_ptr[i].key != NULL) {
@@ -384,7 +383,7 @@ int db_compact(const char *path) {
 			val_buf[vlen] = '\0';	
 
 			// checksum check to make sure the data is not corrupted
-			if (h.crc != h.record_type + h.key_len + h.val_len) {
+			if (h.crc != calculate_checksum(h.record_type, key_buf, h.key_len, val_buf, h.val_len)) {
 				free(val_buf);
 				free(key_buf);
 				fclose(f);
@@ -393,6 +392,7 @@ int db_compact(const char *path) {
 			}
 			// get the current offset before writing to new temp file 
 			long current_offset = ftell(f);
+
 			if (current_offset == -1) {
                 free(val_buf);
                 free(key_buf);
@@ -419,7 +419,6 @@ int db_compact(const char *path) {
 			free(key_buf);
 		}
 		
-	printf("It is working until after the for loop")
 	}
 
 	// close the stream which closes the fd
@@ -433,7 +432,6 @@ int db_compact(const char *path) {
 	// Reopen the compacted file
     p_db_file = fopen(path, "r+b");
     if (!p_db_file) return -1;
-
 
 	return 0;
 }

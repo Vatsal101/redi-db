@@ -2,7 +2,7 @@
 #include <unistd.h>
 
 static FILE* wal_file = NULL;
-int curr_txn_id = 1;
+int curr_txn_id = 0;
 
 void wal_serialize(wal_header *r, char *buf) {
 	if (buf == NULL || r == NULL) return;

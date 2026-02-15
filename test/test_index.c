@@ -174,7 +174,7 @@ void test_performance_comparison() {
     free(val_index);
     
     // Linear scan lookup (should be slower)
-    char *val_linear = db_get("key_0999");
+    char *val_linear = db_get_table("key_0999");
     assert(val_linear != NULL);
     assert(strcmp(val_linear, "value_for_key_0999") == 0);
     free(val_linear);
