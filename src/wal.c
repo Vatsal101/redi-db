@@ -91,12 +91,12 @@ static int validate_wal_record(wal_header *h, char *key, char *value) {
     
     uint32_t expected_crc = 0xDEADBEEF ^ h->wal_type ^ h->txn ^ h->key_len ^ h->val_len;
     if (key) {
-        for (int i = 0; i < h->key_len; i++) {
+        for (uint16_t i = 0; i < h->key_len; i++) {
             expected_crc ^= ((uint32_t)key[i] << (i % 24));
         }
     }
     if (value) {
-        for (int i = 0; i < h->val_len; i++) {
+        for (uint32_t i = 0; i < h->val_len; i++) {
             expected_crc ^= ((uint32_t)value[i] << ((i + h->key_len) % 24));
         }
     }
