@@ -60,7 +60,7 @@ test: $(TEST_BINS)
 		echo "--------------------"; \
 		./$$test || exit 1; \
 	done
-	@echo "🎉 All tests completed successfully!"
+	@echo "All tests completed successfully!"
 
 clean:
 	@echo "Cleaning build files and databases..."
