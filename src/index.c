@@ -9,6 +9,9 @@ int starting_elements = 31;
 int size = 0;
 int capacity = 31;
 
+pthread_rwlock_t lock;
+pthread_rwlock_init(&lock, NULL);
+
 // initializes the hash table 
 int init_hash_table(void) {
     arr_ptr = calloc(starting_elements, sizeof(hash_table_val));
@@ -102,6 +105,8 @@ void resize(void) {
 }
 
 int get(const char *key) {
+    pthread_rwlock_tryrdlock(&lock); 
+    
     if (!key || !arr_ptr) return -1;
 
     unsigned long hash_val = hash(key);    
@@ -118,10 +123,14 @@ int get(const char *key) {
             return arr_ptr[probe_index].offset;
         }
     }
+
+    pthread_rwlock_unlock(&lock);
     return -1;
 }
 
 int insert(const char *key, long value) {
+    pthread_rwlock_trywrlock(&lock);    
+
     if (!key || value < 0 || !arr_ptr) return -1;
 
     if ((double) size / capacity > 0.7) {
@@ -169,6 +178,8 @@ int insert(const char *key, long value) {
     }
 
     // table is full 
+    pthread_rwlock_unlock(&lock);
+
     return -1;
 }
 
