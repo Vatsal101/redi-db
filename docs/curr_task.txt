@@ -2,3 +2,13 @@ MILESTONE 5
 
 1. Build thread safe in-memory store
     2 options build std::shared_mutex
+
+-> use pthread_rw lock to do that
+-> must implement bucketing for the hashmap so we have finegrained locking and so we can have concurrent writes as well as concurrent reads
+-> research how to bucket the hashmap and then figure out what locks to use (im thinking simple mutexes for each bucket)
+-> however if we have a mutex for each bucket we must also then destory all the mutexes once we resize must do more research this is the first step
+
+
+
+
+-> make an array of buckets and each bucket has its own hash map??

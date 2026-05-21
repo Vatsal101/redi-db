@@ -8,6 +8,7 @@
 // p_db_file should be binary file
 static FILE *p_db_file = NULL;
 static FILE *wal_file = NULL;
+static HashTable curr_table;
 
 FILE* get_wal_file() {
 	return wal_file;
@@ -44,7 +45,7 @@ void db_close() {
         wal_file = NULL;
     }
     // Clean up hash table when closing database
-    cleanup_hash_table();
+    cleanup_hash_table(&curr_table);
 }
 
 int db_create(const char *path) {
@@ -63,8 +64,9 @@ int db_create(const char *path) {
     if (!p_db_file) return -1;
     
     // Initialize hash table when creating a new database
-    cleanup_hash_table(); // Clean up any existing hash table first
-    if (init_hash_table() != 0) {
+    cleanup_hash_table(&curr_table); // Clean up any existing hash table first
+    if (init_hash_table(curr_table) != 0) {
+
         fclose(p_db_file);
 		fclose(wal_file);
         p_db_file = NULL;
@@ -200,13 +202,13 @@ int fill_offset_table() {
         // This handles both regular records and tombstones
         if (h.record_type == 1) {
             // Regular record - insert or update
-			if (insert(key_buf, current_pos) != 0) {
+			if (insert(&curr_table, key_buf, current_pos) != 0) {
                 free(key_buf);
                 return -1;
             }
         } else if (h.record_type == 2) {
             // Tombstone - remove from hash table
-            delete(key_buf);
+            delete(&curr_table, key_buf);
         }
 
         free(key_buf);
@@ -243,8 +245,9 @@ int db_open(const char *path) {
     }
     
     // Initialize hash table when opening an existing database
-    cleanup_hash_table(); // Clean up any existing hash table first
-    if (init_hash_table() != 0) {
+	HashTable new_table;
+    cleanup_hash_table(&curr_table); // Clean up any existing hash table first
+    if (init_hash_table(&new_table) != 0) {
         fclose(p_db_file);
 		fclose(wal_file);
         p_db_file = NULL;
@@ -253,8 +256,8 @@ int db_open(const char *path) {
     }
     
     // Rebuild the hash table from the existing data
-    if (fill_offset_table() != 0) {
-        cleanup_hash_table();
+    if (fill_offset_table(&new_table) != 0) {
+        cleanup_hash_table(&new_table);
 		fclose(p_db_file);
 		fclose(wal_file);
         p_db_file = NULL;
@@ -275,7 +278,7 @@ int db_open(const char *path) {
     }
  
 	if (db_compact(path) != 0) {
-        cleanup_hash_table();
+        cleanup_hash_table(&new_table);
 		fclose(p_db_file);
 		fclose(wal_file);
         p_db_file = NULL;
@@ -286,6 +289,8 @@ int db_open(const char *path) {
 	if (wal_safe_compact() != 0) {
 		return -1;
 	}	
+
+	curr_table = new_table;
 
     return 0;
 }
@@ -331,7 +336,8 @@ int db_compact(const char *path) {
 
 	char header_buf[HEADER_LEN];
 	record_header_t h;
-	
+	hash_table_val *arr_ptr = curr_table.arr_ptr;	
+
 	for (int i = 0; i < capacity; i++) {
 		// check if key exists
 		if (arr_ptr[i].key != NULL) {

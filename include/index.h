@@ -12,18 +12,26 @@ typedef struct {
 	char* key; // value of the key
 } hash_table_val;
 
-int init_hash_table(void);
-void cleanup_hash_table(void);
-unsigned long hash(const char *str);
-void resize(void);
-int get(const char *key);
-int insert(const char *key, long value);
-int delete(const char *key);
+typedef struct {
+	hash_table_val *arr_ptr;
+	int starting_elements;
+	int size;
+	int capacity;
+} HashTable;
 
-extern hash_table_val *arr_ptr;
-extern int starting_elements;
-extern int size;
-extern int capacity;
+
+int init_hash_table(HashTable *ht);
+void cleanup_hash_table(HashTable *ht);
+unsigned long hash(const char *str);
+void resize(HashTable *ht);
+int get(HashTable *ht, char *key);
+int insert(HashTable *ht, const char *key, long value);
+int delete(HashTable *ht, const char *key);
+
+// extern hash_table_val *arr_ptr;
+// extern int starting_elements;
+// extern int size;
+// extern int capacity;
 
 #endif
 
