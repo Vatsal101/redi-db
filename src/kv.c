@@ -6,12 +6,17 @@ int db_delete_table(const char *key) {
 	if (key == NULL || strlen(key) == 0) return -1;
 	
 	// check if key exists in index
-	long exisiting_offset = get(key);
+	long exisiting_offset = get(get_hash_table(), key);
 	if (exisiting_offset == -1) return -1; // key doesnt exist
 
-	if ((wal_start()) != 0) return -1; // signifies we have the start of the WAL commit
-	if ((wal_delete(key)) != 0) return -1; // actually deletes the content to the WAL
-	if ((wal_end()) != 0) return -1; // signifies the end of the WAL commit
+	WalManager *wal = get_wal_manager();
+	if (!wal) return -1;
+	if (wal_start(wal) != 0) return -1;
+	if (wal_delete(wal, key) != 0) {
+		wal_abort(wal);
+		return -1;
+	}
+	if (wal_end(wal) != 0) return -1;
 
 	record_header_t record;
 	size_t klen = strlen(key);
@@ -30,12 +35,10 @@ int db_delete_table(const char *key) {
 	// uses the size of the keys, value, records to seralize the data to a buffer 	
 	serialize(&record, header);
 	
-	// remove from hash table first	
-	if (delete(key) != 0) return -1;
-
-	// then write tombstone record to file 
+	// write tombstone record to file before mutating the index
 	if (db_append_raw(header, HEADER_LEN) != 0) return -1;
 	if (db_append_raw(key, klen) != 0) return -1;
+	if (delete(get_hash_table(), key) != 0) return -1;
 
 	return 0;
 
@@ -45,9 +48,14 @@ int db_delete_table(const char *key) {
 int db_put_table(const char *key, const char *value) {
     if (key == NULL || value == NULL || strlen(key) == 0) return -1;
 
-	if ((wal_start()) != 0) return -1; // signifies we have the start of the WAL commit
-	if ((wal_put(key, value)) != 0) return -1; // actually writes the content to the WAL
-	if ((wal_end()) != 0) return -1; // signifies the end of the WAL commit
+	WalManager *wal = get_wal_manager();
+	if (!wal) return -1;
+	if (wal_start(wal) != 0) return -1;
+	if (wal_put(wal, key, value) != 0) {
+		wal_abort(wal);
+		return -1;
+	}
+	if (wal_end(wal) != 0) return -1;
 
     record_header_t record;
     size_t klen = strlen(key);
@@ -70,13 +78,11 @@ int db_put_table(const char *key, const char *value) {
 	// get the current offset before writing to file
     long current_offset = get_curr_offset();
     if (current_offset == -1) return -1;	
-	// insert into hash table first
-	if (insert(key, current_offset) != 0) return -1;
-
-	// then write to file
+	// write to file before mutating the index
 	if (db_append_raw(header, HEADER_LEN) != 0) return -1;
 	if (db_append_raw(key, klen) != 0) return -1;
 	if (db_append_raw(value, vlen) != 0) return -1;
+	if (insert(get_hash_table(), key, current_offset) != 0) return -1;
 	
 	return 0;
 }
@@ -88,7 +94,7 @@ char *db_get_table(const char *key) {
 	record_header_t h;
 
 	// get offset from hash table
-	long offset = get(key);
+	long offset = get(get_hash_table(), key);
 	if (offset == -1) return NULL; //check if key exists
 
 	ssize_t r = db_read_at(offset, header_buf, HEADER_LEN);
@@ -153,8 +159,8 @@ int db_delete_table_internal(const char *key) {
 	if (key == NULL || strlen(key) == 0) return -1;
 	
 	// check if key exists in index
-	long exisiting_offset = get(key);
-	if (exisiting_offset == -1) return -1; // key doesnt exist
+	long exisiting_offset = get(get_hash_table(), key);
+	if (exisiting_offset == -1) return 0; // recovery deletes are idempotent
 
 	record_header_t record;
 	size_t klen = strlen(key);
@@ -173,12 +179,10 @@ int db_delete_table_internal(const char *key) {
 	// uses the size of the keys, value, records to seralize the data to a buffer 	
 	serialize(&record, header);
 	
-	// remove from hash table first	
-	if (delete(key) != 0) return -1;
-
-	// then write tombstone record to file 
+	// write tombstone record to file before mutating the index
 	if (db_append_raw(header, HEADER_LEN) != 0) return -1;
 	if (db_append_raw(key, klen) != 0) return -1;
+	if (delete(get_hash_table(), key) != 0) return -1;
 
 	return 0;
 }
@@ -207,13 +211,11 @@ int db_put_table_internal(const char *key, const char *value) {
 	// get the current offset before writing to file
     long current_offset = get_curr_offset();
     if (current_offset == -1) return -1;	
-	// insert into hash table first
-	if (insert(key, current_offset) != 0) return -1;
-
-	// then write to file
+	// write to file before mutating the index
 	if (db_append_raw(header, HEADER_LEN) != 0) return -1;
 	if (db_append_raw(key, klen) != 0) return -1;
 	if (db_append_raw(value, vlen) != 0) return -1;
+	if (insert(get_hash_table(), key, current_offset) != 0) return -1;
 	
 	return 0;
 }

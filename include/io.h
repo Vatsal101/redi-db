@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <stdlib.h>
+
+struct WalManager;
 // Record header structure (also defined in kv.h)
 typedef struct {
     uint32_t record_len;  // Total length of record (header + key + value)
@@ -37,10 +39,13 @@ int db_read_at(long offset, void *buf, size_t len);
 int db_rewind(void);
 long get_curr_offset(void);
 
-// Misallencous (index table, compaction, wal_file, db_file)
+// Misallencous (index table, compaction, wal manager, db_file)
 int fill_offset_table(void);
 int db_compact(const char *path);
-FILE* get_wal_file();
+struct WalManager* get_wal_manager(void);
+
+#include "index.h"
+HashTable* get_hash_table(void);
 
 
 uint32_t calculate_checksum(uint8_t record_type, const char *key, uint16_t key_len, const char *value, uint32_t val_len);

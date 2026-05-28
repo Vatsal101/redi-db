@@ -7,12 +7,18 @@
 
 // p_db_file should be binary file
 static FILE *p_db_file = NULL;
-static FILE *wal_file = NULL;
+static WalManager wal;
+static int wal_initialized = 0;
 static HashTable curr_table;
 
-FILE* get_wal_file() {
-	return wal_file;
+HashTable* get_hash_table(void) {
+	return &curr_table;
 }
+
+WalManager* get_wal_manager(void) {
+	return wal_initialized ? &wal : NULL;
+}
+
 FILE* get_db_file() {
 	return p_db_file;
 }
@@ -40,40 +46,53 @@ void deserialize(char *buf, record_header_t *r) {
 void db_close() {
     if (p_db_file) {
         fclose(p_db_file);
-	fclose(wal_file);
         p_db_file = NULL;
-        wal_file = NULL;
     }
+	if (wal_initialized) {
+		if (wal.fp) fclose(wal.fp);
+		pthread_mutex_destroy(&wal.lock);
+		wal.fp = NULL;
+		wal_initialized = 0;
+	}
     // Clean up hash table when closing database
     cleanup_hash_table(&curr_table);
 }
 
 int db_create(const char *path) {
 	if (!path) return -1;
-	if (p_db_file) {
-        fclose(p_db_file);
-    }
+	if (p_db_file || wal_initialized) db_close();
 	
 	char path_copy[strlen(path) + 5]; // create new string which has a little more space than the path len
 	strcpy(path_copy, path);  // copy the path into this path_copy
 	char wal_path[] = ".wal";
 
 	p_db_file = fopen(path, "w+b");
-	wal_file = fopen(strcat(path_copy, wal_path), "w+b"); // concat path with the wal ending and create file with that name
-
-    if (!p_db_file) return -1;
+	FILE *wal_fp = fopen(strcat(path_copy, wal_path), "w+b"); // concat path with the wal ending and create file with that name
+	
+    if (!p_db_file || !wal_fp) {
+		if (p_db_file) fclose(p_db_file);
+		if (wal_fp) fclose(wal_fp);
+		p_db_file = NULL;
+		return -1;
+	}
     
     // Initialize hash table when creating a new database
     cleanup_hash_table(&curr_table); // Clean up any existing hash table first
-    if (init_hash_table(curr_table) != 0) {
 
+    if (init_hash_table(&curr_table) != 0) {
         fclose(p_db_file);
-		fclose(wal_file);
+		fclose(wal_fp);
         p_db_file = NULL;
-        wal_file = NULL;
         return -1;
     }
     
+    if (wal_init(&wal, wal_fp) != 0) {
+		fclose(p_db_file);
+		fclose(wal_fp);
+		p_db_file = NULL;
+		return -1;
+	}
+	wal_initialized = 1;
     return 0;	
 }
 
@@ -104,7 +123,7 @@ int db_append_raw(const void *buf, size_t len){
     if (fsync(fileno(p_db_file)) != 0) {
         return -1;
     }
-	return 0;
+    return 0;
 }
 
 int db_append_raw_specifc(const void *buf, size_t len, FILE *fp) {
@@ -124,7 +143,7 @@ int db_append_raw_specifc(const void *buf, size_t len, FILE *fp) {
 		return -1;	
 	}
 
-	return 0;
+    return 0;
 }
 // since the buffer is not a const it means it can be modified that means that buf is going to be an abstract way 
 // to store the data we get from our db when we are done storing it.
@@ -144,7 +163,7 @@ int db_read_at(long offset, void *buf, size_t len) {
 	size_t bytes_read = fread(buf, 1, len, p_db_file);
 		if (bytes_read != len) {
 		    if (feof(p_db_file)) {
-        	    return 0; // EOF reached
+				return 0; // EOF reached
         	}
         if (ferror(p_db_file)) {
             clearerr(p_db_file);
@@ -223,10 +242,7 @@ int fill_offset_table() {
 
 int db_open(const char *path) {
     if (!path) return -1;
-    if (p_db_file) {
-        fclose(p_db_file);
-        if (wal_file) fclose(wal_file); // Add null check
-    }
+    if (p_db_file || wal_initialized) db_close();
 
     p_db_file = fopen(path, "r+b");
     if (!p_db_file) return -1;
@@ -234,63 +250,63 @@ int db_open(const char *path) {
     char wal_path[strlen(path) + 5];
     strcpy(wal_path, path);
     strcat(wal_path, ".wal");
-    wal_file = fopen(wal_path, "r+b");
-    if (!wal_file) {
+    FILE *wal_fp = fopen(wal_path, "r+b");
+    if (!wal_fp) {
         // Create WAL file if it doesn't exist
-        wal_file = fopen(wal_path, "w+b");
-        if (!wal_file) {
+        wal_fp = fopen(wal_path, "w+b");
+        if (!wal_fp) {
             fclose(p_db_file);
+			p_db_file = NULL;
             return -1;
         }
     }
     
     // Initialize hash table when opening an existing database
 	HashTable new_table;
+
     cleanup_hash_table(&curr_table); // Clean up any existing hash table first
+
     if (init_hash_table(&new_table) != 0) {
         fclose(p_db_file);
-		fclose(wal_file);
+		fclose(wal_fp);
         p_db_file = NULL;
-        wal_file = NULL;
         return -1;
     }
     
+	curr_table = new_table; // the new table is now the current table
+
     // Rebuild the hash table from the existing data
-    if (fill_offset_table(&new_table) != 0) {
-        cleanup_hash_table(&new_table);
+    if (fill_offset_table() != 0) {
+        cleanup_hash_table(&curr_table);
 		fclose(p_db_file);
-		fclose(wal_file);
+		fclose(wal_fp);
         p_db_file = NULL;
-        wal_file = NULL;
         return -1;
     }
 
     // Initialize WAL
-    if (wal_init() != 0) {
+    if (wal_init(&wal, wal_fp) != 0) {
         fclose(p_db_file);
+		fclose(wal_fp);
+		p_db_file = NULL;
         return -1;
     }
+	wal_initialized = 1;
     
     // Perform WAL recovery
-    if (wal_crash_recovery() != 0) {
-        fclose(p_db_file);
+    if (wal_crash_recovery(&wal) != 0) {
+        db_close();
         return -1;
     }
  
 	if (db_compact(path) != 0) {
-        cleanup_hash_table(&new_table);
-		fclose(p_db_file);
-		fclose(wal_file);
-        p_db_file = NULL;
-        wal_file = NULL;
+		db_close();
         return -1;
 	}
    
-	if (wal_safe_compact() != 0) {
+	if (wal_safe_compact(&wal) != 0) {
 		return -1;
 	}	
-
-	curr_table = new_table;
 
     return 0;
 }
@@ -338,7 +354,7 @@ int db_compact(const char *path) {
 	record_header_t h;
 	hash_table_val *arr_ptr = curr_table.arr_ptr;	
 
-	for (int i = 0; i < capacity; i++) {
+	for (int i = 0; i < curr_table.capacity; i++) {
 		// check if key exists
 		if (arr_ptr[i].key != NULL) {
 			// get offset
@@ -430,6 +446,11 @@ int db_compact(const char *path) {
 	// close the stream which closes the fd
 	fclose(f);
 
+	if (p_db_file) {
+		fclose(p_db_file);
+		p_db_file = NULL;
+	}
+
 	if (rename(filename_template, path) == -1) {
 		unlink(filename_template); // Clean up temporary file
 		return -1;
@@ -439,7 +460,7 @@ int db_compact(const char *path) {
     p_db_file = fopen(path, "r+b");
     if (!p_db_file) return -1;
 
-	return 0;
+    return 0;
 }
 
 // simple checksum 

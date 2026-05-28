@@ -9,8 +9,9 @@ int init_concurrent_hash_table(ConcurrentHashTable *cht) {
 
     // need t intialize the hash table for each bucket and the lock for each bucket
     for (int i = 0; i < cht->capacity; i++) {
-        pthread_rwlock_init(cht->bucket_ptr[i]->lock);
-        init_hash_table(cht->bucket_ptr->map); 
+        pthread_rwlock_init(&cht->bucket_ptr[i].lock, NULL);
+        cht->bucket_ptr[i].map = malloc(sizeof(HashTable));
+        init_hash_table(cht->bucket_ptr[i].map); 
     }
 
     return 0;
@@ -18,14 +19,14 @@ int init_concurrent_hash_table(ConcurrentHashTable *cht) {
 
 // safely destroys the hash table and freeing all the strings in the hash table
 void cleanup_concurrent_hash_table(ConcurrentHashTable *cht) {
-    if (!cht) return -1;
     if (cht->bucket_ptr) {
 
         for (int i = 0; i < cht->capacity; i++) {
 
             if (cht->bucket_ptr[i].map) {
                 cleanup_hash_table(cht->bucket_ptr[i].map);
-                pthread_mutex_destroy(cht->bucket_ptr[i].lock);
+                free(cht->bucket_ptr[i].map);
+                pthread_rwlock_destroy(&cht->bucket_ptr[i].lock);
             }
         }
 
@@ -61,7 +62,7 @@ int bucket_id(ConcurrentHashTable *cht, const char *s) {
     return vhash(s) % cht->capacity;
 }
 
-int concurrent_get(ConcurrentHashTable *cht, char *key) {
+long concurrent_get(ConcurrentHashTable *cht, const char *key) {
     if (!cht || !key || !cht->bucket_ptr) return -1;
 
     int b_id = bucket_id(cht, key);
@@ -70,7 +71,7 @@ int concurrent_get(ConcurrentHashTable *cht, char *key) {
 
     pthread_rwlock_rdlock(&bucket_ptr[b_id].lock);
 
-    int result = get(bucket_ptr[b_id].map, key);
+    long result = get(bucket_ptr[b_id].map, key);
 
     if (result == -1) {
         pthread_rwlock_unlock(&bucket_ptr[b_id].lock);
@@ -79,7 +80,7 @@ int concurrent_get(ConcurrentHashTable *cht, char *key) {
 
     pthread_rwlock_unlock(&bucket_ptr[b_id].lock);
 
-    return result
+    return result;
 }
 
 int concurrent_insert(ConcurrentHashTable *cht, const char *key, long value) {
@@ -88,14 +89,14 @@ int concurrent_insert(ConcurrentHashTable *cht, const char *key, long value) {
     int b_id = bucket_id(cht, key);
 
     Bucket *bucket_ptr = cht->bucket_ptr;
-    pthread_rwlock_wrlock(&bucket_ptr->lock);
+    pthread_rwlock_wrlock(&bucket_ptr[b_id].lock);
 
     int res = insert(bucket_ptr[b_id].map, key, value);
 
     if (res == -1) {
         // insert failed
         pthread_rwlock_unlock(&bucket_ptr[b_id].lock);
-        return -1
+        return -1;
     }
 
     pthread_rwlock_unlock(&bucket_ptr[b_id].lock);
@@ -116,7 +117,7 @@ int concurrent_delete(ConcurrentHashTable *cht, const char *key) {
     if (res == -1) {
         // delete failed
         pthread_rwlock_unlock(&bucket_ptr[b_id].lock);
-        return -1
+        return -1;
     }
     pthread_rwlock_unlock(&bucket_ptr[b_id].lock);
 

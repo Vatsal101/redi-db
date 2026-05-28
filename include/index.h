@@ -24,7 +24,7 @@ int init_hash_table(HashTable *ht);
 void cleanup_hash_table(HashTable *ht);
 unsigned long hash(const char *str);
 void resize(HashTable *ht);
-int get(HashTable *ht, char *key);
+long get(HashTable *ht, const char *key);
 int insert(HashTable *ht, const char *key, long value);
 int delete(HashTable *ht, const char *key);
 

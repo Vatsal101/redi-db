@@ -2,6 +2,7 @@
 #define C_HASH_MAP_H
 
 #include "pthread.h"
+#include <stdlib.h>
 #include "index.h"
 
 typedef struct{
@@ -20,7 +21,7 @@ void cleanup_concurrent_hash_table(ConcurrentHashTable *cht);
 unsigned long vhash(const char *str);
 
 void concurrent_resize(ConcurrentHashTable *cht);
-int concurrent_get(ConcurrentHashTable *cht, char *key);
+long concurrent_get(ConcurrentHashTable *cht, const char *key);
 
 int concurrent_insert(ConcurrentHashTable *cht, const char *key, long value);
 int concurrent_delete(ConcurrentHashTable *cht, const char *key);

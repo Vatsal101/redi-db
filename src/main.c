@@ -5,7 +5,7 @@
 
 void test_get(const char *key, const char *expected) {
     printf("Getting key '%s'...\n", key);
-    char *v = db_get(key);
+    char *v = db_get_table(key);
     if (v) { 
         printf("  %s -> %s", key, v);
         if (expected) {
@@ -36,13 +36,13 @@ int main(void) {
     // Test 1: Basic put/get
     printf("--- Test 1: Basic Operations ---\n");
     printf("Putting key 'foo' = 'hello'...\n");
-    if (db_put("foo", "hello") != 0) { 
+    if (db_put_table("foo", "hello") != 0) { 
         printf("put 'foo' failed\n"); 
         return 1;
     }
     
     printf("Putting key 'bar' = 'world'...\n");
-    if (db_put("bar", "world") != 0) { 
+    if (db_put_table("bar", "world") != 0) { 
         printf("put 'bar' failed\n"); 
         return 1;
     }
@@ -54,7 +54,7 @@ int main(void) {
     // Test 2: Delete (tombstone) operations
     printf("--- Test 2: Delete Operations ---\n");
     printf("Deleting key 'foo'...\n");
-    if (db_delete("foo") != 0) {
+    if (db_delete_table("foo") != 0) {
         printf("delete 'foo' failed\n");
         return 1;
     }
@@ -66,7 +66,7 @@ int main(void) {
     // Test 3: Put after delete (resurrection)
     printf("--- Test 3: Put After Delete ---\n");
     printf("Putting key 'foo' = 'resurrected' (after delete)...\n");
-    if (db_put("foo", "resurrected") != 0) {
+    if (db_put_table("foo", "resurrected") != 0) {
         printf("put 'foo' after delete failed\n");
         return 1;
     }
@@ -78,13 +78,13 @@ int main(void) {
     // Test 4: Multiple updates and deletes
     printf("--- Test 4: Multiple Operations ---\n");
     printf("Updating 'bar' = 'updated'...\n");
-    if (db_put("bar", "updated") != 0) {
+    if (db_put_table("bar", "updated") != 0) {
         printf("update 'bar' failed\n");
         return 1;
     }
     
     printf("Updating 'bar' = 'updated_again'...\n");
-    if (db_put("bar", "updated_again") != 0) {
+    if (db_put_table("bar", "updated_again") != 0) {
         printf("second update 'bar' failed\n");
         return 1;
     }
@@ -92,7 +92,7 @@ int main(void) {
     test_get("bar", "updated_again");
     
     printf("Deleting 'bar'...\n");
-    if (db_delete("bar") != 0) {
+    if (db_delete_table("bar") != 0) {
         printf("delete 'bar' failed\n");
         return 1;
     }
@@ -104,7 +104,7 @@ int main(void) {
     // Test 5: Delete non-existent key
     printf("--- Test 5: Delete Non-existent Key ---\n");
     printf("Deleting non-existent key 'nonexistent'...\n");
-    if (db_delete("nonexistent") != 0) {
+    if (db_delete_table("nonexistent") != 0) {
         printf("delete 'nonexistent' failed\n");
         return 1;
     }
@@ -115,23 +115,23 @@ int main(void) {
     // Test 6: Complex scenario
     printf("--- Test 6: Complex Scenario ---\n");
     printf("Adding key 'test' = 'value1'...\n");
-    db_put("test", "value1");
+    db_put_table("test", "value1");
     test_get("test", "value1");
     
     printf("Deleting 'test'...\n");
-    db_delete("test");
+    db_delete_table("test");
     test_get("test", NULL);
     
     printf("Adding 'test' = 'value2'...\n");
-    db_put("test", "value2");
+    db_put_table("test", "value2");
     test_get("test", "value2");
     
     printf("Deleting 'test' again...\n");
-    db_delete("test");
+    db_delete_table("test");
     test_get("test", NULL);
     
     printf("Adding 'test' = 'final_value'...\n");
-    db_put("test", "final_value");
+    db_put_table("test", "final_value");
     test_get("test", "final_value");
     printf("\n");
 

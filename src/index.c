@@ -21,7 +21,6 @@ int init_hash_table(HashTable *ht) {
 }
 // safely destroys the hash table and freeing all the strings in the hash table
 void cleanup_hash_table(HashTable *ht) {
-    if (!ht) return -1;
     if (ht->arr_ptr) {
         for (int i = 0; i < ht->capacity; i++) {
 	// free all the strings in the arr_ptr[i] struct
@@ -52,8 +51,6 @@ unsigned long hash(const char *str) {
 
 // resize method for my hash table
 void resize(HashTable *ht) {
-    if (!ht) return -1;
-
     int old_capacity = ht->capacity;
     hash_table_val *old_arr_ptr = ht->arr_ptr;
 
@@ -106,7 +103,7 @@ void resize(HashTable *ht) {
     free(old_arr_ptr);
 }
 
-int get(HashTable *ht, const char *key) {
+long get(HashTable *ht, const char *key) {
     if (!ht || !key || !ht->arr_ptr) return -1;
 
     unsigned long hash_val = hash(key);    

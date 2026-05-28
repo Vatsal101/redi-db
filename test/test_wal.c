@@ -44,8 +44,8 @@ int test_basic_wal_operations() {
         return 0;
     }
     
-    // Initialize WAL
-    if (wal_init() != 0) {
+    // Verify WAL initialized during database creation
+    if (!get_wal_manager()) {
         printf("Failed to initialize WAL\n");
         return 0;
     }
@@ -80,20 +80,21 @@ int test_transaction_boundaries() {
     cleanup_test_files();
     
     if (db_create("test.db") != 0) return 0;
-    if (wal_init() != 0) return 0;
+    WalManager *wal = get_wal_manager();
+    if (!wal) return 0;
     
-    printf("  Initial transaction ID: %d\n", curr_txn_id);
+    printf("  Initial transaction ID: %llu\n", (unsigned long long)wal->next_txn_id);
     
     // First transaction
     if (db_put_table("txn1_key", "txn1_value") != 0) return 0;
-    printf("  After first transaction: %d\n", curr_txn_id);
+    printf("  After first transaction: %llu\n", (unsigned long long)wal->next_txn_id);
     
     // Second transaction  
     if (db_put_table("txn2_key", "txn2_value") != 0) return 0;
-    printf("  After second transaction: %d\n", curr_txn_id);
+    printf("  After second transaction: %llu\n", (unsigned long long)wal->next_txn_id);
     
     // Verify transaction IDs incremented correctly
-    int txn_ids_correct = (curr_txn_id == 3); // Should be 3 after 2 transactions
+    int txn_ids_correct = (wal->next_txn_id == 3); // Should be 3 after 2 transactions
     
     db_close();
     return txn_ids_correct;
@@ -107,7 +108,7 @@ int test_wal_recovery() {
     
     // Create database and add data
     if (db_create("test.db") != 0) return 0;
-    if (wal_init() != 0) return 0;
+    if (!get_wal_manager()) return 0;
     
     if (db_put_table("recover_key1", "recover_value1") != 0) return 0;
     if (db_put_table("recover_key2", "recover_value2") != 0) return 0;
@@ -145,7 +146,7 @@ int test_partial_write_detection() {
     cleanup_test_files();
     
     if (db_create("test.db") != 0) return 0;
-    if (wal_init() != 0) return 0;
+    if (!get_wal_manager()) return 0;
     
     // Add some valid data
     if (db_put_table("valid_key", "valid_value") != 0) return 0;
@@ -197,7 +198,8 @@ int test_wal_compaction() {
     cleanup_test_files();
     
     if (db_create("test.db") != 0) return 0;
-    if (wal_init() != 0) return 0;
+    WalManager *wal = get_wal_manager();
+    if (!wal) return 0;
     
     // Add multiple operations to build up WAL
     for (int i = 0; i < 5; i++) {
@@ -211,7 +213,7 @@ int test_wal_compaction() {
     printf("  WAL size before compaction: %ld bytes\n", wal_size_before);
     
     // Perform safe compaction
-    if (wal_safe_compact() != 0) {
+    if (wal_safe_compact(wal) != 0) {
         printf("  WAL compaction failed\n");
         db_close();
         return 0;
@@ -238,7 +240,8 @@ int test_stress_operations() {
     cleanup_test_files();
     
     if (db_create("test.db") != 0) return 0;
-    if (wal_init() != 0) return 0;
+    WalManager *wal = get_wal_manager();
+    if (!wal) return 0;
     
     int operations = 100;
     printf("  Performing %d operations...\n", operations);
@@ -268,7 +271,7 @@ int test_stress_operations() {
     }
     
     printf("  Completed %d operations\n", operations);
-    printf("  Final transaction ID: %d\n", curr_txn_id);
+    printf("  Final transaction ID: %llu\n", (unsigned long long)wal->next_txn_id);
     printf("  WAL file size: %ld bytes\n", get_file_size("test.db.wal"));
     
     // Verify some data - use key49 which survives (key50 gets deleted when i=51)

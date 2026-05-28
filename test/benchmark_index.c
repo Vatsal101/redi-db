@@ -64,7 +64,7 @@ void benchmark_performance() {
         snprintf(key, sizeof(key), "benchmark_key_%05d", 
                  (i * num_records) / num_lookups);
         
-        char *val = db_get(key);
+        char *val = db_get_table(key);
         assert(val != NULL);
         free(val);
     }
