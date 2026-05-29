@@ -42,7 +42,10 @@ int wal_init(WalManager *wal, FILE *fp) {
     return -1;
 
   wal->next_txn_id = 1;
-
+  wal->written_lsn = 0;
+  wal->durable_lsn = 0;
+  wal->fsync_count = 0;
+  wal->sync_in_progress = 0;
   return 0;
 }
 
@@ -309,6 +312,8 @@ int wal_safe_compact(WalManager *wal) {
   if (fflush(wal->fp) != 0 || fsync(fileno(wal->fp)) != 0 ||
       ftruncate(fileno(wal->fp), 0) != 0 || fseek(wal->fp, 0, SEEK_SET) != 0) {
     result = -1;
+  } else {
+    wal->fsync_count++;
   }
 
 done:
@@ -321,22 +326,30 @@ int wal_commit_op(WalManager *wal, uint8_t wall_type, const char *key,
   if (!wal || key == NULL || strlen(key) == 0)
     return -1;
 
-  if (wall_type == WAL_DEL && !value) {
+  if (wall_type == WAL_PUT && !value)
     return -1;
-  }
+  if (wall_type != WAL_PUT && wall_type != WAL_DEL)
+    return -1;
+
   pthread_mutex_lock(&wal->lock);
 
-  int64_t txn = wal->next_txn_id++;
+  uint32_t txn = (uint32_t)wal->next_txn_id++;
+  int result = 0;
 
   if (wal_write_content(wal, txn, WAL_BEGIN, NULL, NULL) != 0) {
-    return -1;
+    result = -1;
   } else if (wal_write_content(wal, txn, wall_type, key, value)) {
-    return -1;
+    result = -1;
   } else if (wal_write_content(wal, txn, WAL_COMMIT, NULL, NULL)) {
+    result = -1;
+  }
+
+  if (result != 0) {
+    pthread_mutex_unlock(&wal->lock);
     return -1;
   }
 
-  int64_t commit_lsn = wal->written_lsn;
+  uint64_t commit_lsn = wal->written_lsn;
 
   // group commit logic
   // if the durable_lsn >= commit_lsn then everythign from 1 - durable_lsn is
@@ -373,17 +386,24 @@ int wal_commit_op(WalManager *wal, uint8_t wall_type, const char *key,
   usleep(1000);
   pthread_mutex_lock(&wal->lock);
 
-  int64_t target_lsn = commit_lsn;
+  uint64_t target_lsn = wal->written_lsn;
   fflush(wal->fp); // we assume WAL appends before target lsn have already
                    // reached kernel buffer
 
   pthread_mutex_unlock(&wal->lock);
 
-  fsync(fileno(wal->fp));
+  if (fsync(fileno(wal->fp)) != 0) {
+    pthread_mutex_lock(&wal->lock);
+    wal->sync_in_progress = 0;
+    pthread_cond_broadcast(&wal->durable_cv);
+    pthread_mutex_unlock(&wal->lock);
+    return -1;
+  }
 
   pthread_mutex_lock(&wal->lock);
 
   wal->durable_lsn = target_lsn;
+  wal->fsync_count++;
   wal->sync_in_progress = 0;
 
   pthread_cond_broadcast(&wal->durable_cv);
@@ -398,6 +418,25 @@ int wal_commit_put(WalManager *wal, const char *key, const char *value) {
 
 int wal_commit_delete(WalManager *wal, const char *key) {
   return wal_commit_op(wal, WAL_DEL, key, NULL);
+}
+
+void wal_reset_fsync_count(WalManager *wal) {
+  if (!wal)
+    return;
+
+  pthread_mutex_lock(&wal->lock);
+  wal->fsync_count = 0;
+  pthread_mutex_unlock(&wal->lock);
+}
+
+uint64_t wal_get_fsync_count(WalManager *wal) {
+  if (!wal)
+    return 0;
+
+  pthread_mutex_lock(&wal->lock);
+  uint64_t count = wal->fsync_count;
+  pthread_mutex_unlock(&wal->lock);
+  return count;
 }
 
 int wal_start(WalManager *wal) {

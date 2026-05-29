@@ -1,5 +1,5 @@
 #include "io.h"
-#include "index.h"
+#include "concurrent_hash_map.h"
 #include "wal.h"
 #include <fcntl.h>
 #include <pthread.h>
@@ -10,9 +10,9 @@
 static FILE *p_db_file = NULL;
 static WalManager wal;
 static int wal_initialized = 0;
-static HashTable curr_table;
+static ConcurrentHashTable curr_cht;
 
-HashTable *get_hash_table(void) { return &curr_table; }
+ConcurrentHashTable *get_cht(void) { return &curr_cht; }
 
 WalManager *get_wal_manager(void) { return wal_initialized ? &wal : NULL; }
 
@@ -54,7 +54,7 @@ void db_close() {
     wal_initialized = 0;
   }
   // Clean up hash table when closing database
-  cleanup_hash_table(&curr_table);
+  cleanup_concurrent_hash_table(&curr_cht);
 }
 
 int db_create(const char *path) {
@@ -83,9 +83,9 @@ int db_create(const char *path) {
   }
 
   // Initialize hash table when creating a new database
-  cleanup_hash_table(&curr_table); // Clean up any existing hash table first
+  cleanup_concurrent_hash_table(&curr_cht); // Clean up any existing hash table first
 
-  if (init_hash_table(&curr_table) != 0) {
+  if (init_concurrent_hash_table(&curr_cht) != 0) {
     fclose(p_db_file);
     fclose(wal_fp);
     p_db_file = NULL;
@@ -238,13 +238,13 @@ int fill_offset_table() {
     // This handles both regular records and tombstones
     if (h.record_type == 1) {
       // Regular record - insert or update
-      if (insert(&curr_table, key_buf, current_pos) != 0) {
+      if (concurrent_insert(&curr_cht, key_buf, current_pos) != 0) {
         free(key_buf);
         return -1;
       }
     } else if (h.record_type == 2) {
       // Tombstone - remove from hash table
-      delete(&curr_table, key_buf);
+      concurrent_delete(&curr_cht, key_buf);
     }
 
     free(key_buf);
@@ -282,22 +282,22 @@ int db_open(const char *path) {
   }
 
   // Initialize hash table when opening an existing database
-  HashTable new_table;
+  
 
-  cleanup_hash_table(&curr_table); // Clean up any existing hash table first
+  cleanup_concurrent_hash_table(&curr_cht); // Clean up any existing hash table first
 
-  if (init_hash_table(&new_table) != 0) {
+  if (init_concurrent_hash_table(&curr_cht) != 0) {
     fclose(p_db_file);
     fclose(wal_fp);
     p_db_file = NULL;
     return -1;
   }
 
-  curr_table = new_table; // the new table is now the current table
+  
 
   // Rebuild the hash table from the existing data
   if (fill_offset_table() != 0) {
-    cleanup_hash_table(&curr_table);
+    cleanup_concurrent_hash_table(&curr_cht);
     fclose(p_db_file);
     fclose(wal_fp);
     p_db_file = NULL;
@@ -373,50 +373,56 @@ int db_compact(const char *path) {
 
   char header_buf[HEADER_LEN];
   record_header_t h;
-  hash_table_val *arr_ptr = curr_table.arr_ptr;
 
-  for (int i = 0; i < curr_table.capacity; i++) {
-    // check if key exists
-    if (arr_ptr[i].key != NULL) {
-      // get offset
+  for (int bi = 0; bi < curr_cht.capacity; bi++) {
+    Bucket *bucket = &curr_cht.bucket_ptr[bi];
+
+    pthread_rwlock_wrlock(&bucket->lock);
+
+    HashTable *map = bucket->map;
+    hash_table_val *arr_ptr = map->arr_ptr;
+
+    for (int i = 0; i < map->capacity; i++) {
+      if (arr_ptr[i].key == NULL || arr_ptr[i].tombstone)
+        continue;
+
       long offset = arr_ptr[i].offset;
 
-      // move filepointer to the offset we are currently at
       if (fseek(p_db_file, offset, SEEK_SET) != 0)
-        continue; // Error seeking
+        continue;
 
-      // Try to read header at current position
       size_t bytes_read = fread(header_buf, 1, HEADER_LEN, p_db_file);
       if (bytes_read == 0)
-        continue; // EOF
+        continue;
       if (bytes_read != HEADER_LEN)
-        continue; // Incomplete read
+        continue;
 
-      deserialize(header_buf, &h); // deserializes header
+      deserialize(header_buf, &h);
 
       int klen = h.key_len;
       int vlen = h.val_len;
 
-      // store key in key_buf
       char *key_buf = malloc(klen + 1);
       if (!key_buf) {
+        pthread_rwlock_unlock(&bucket->lock);
         fclose(f);
         unlink(filename_template);
         return -1;
       }
+
       ssize_t kb = db_read_at(offset + HEADER_LEN, key_buf, klen);
       if (kb < 0 || kb != klen) {
         free(key_buf);
-        continue; // if not read correctly
+        continue;
       }
       key_buf[klen] = '\0';
 
-      // store value in val_buf
       char *val_buf = malloc(vlen + 1);
       if (!val_buf) {
+        free(key_buf);
+        pthread_rwlock_unlock(&bucket->lock);
         fclose(f);
         unlink(filename_template);
-        free(key_buf);
         return -1;
       }
 
@@ -424,25 +430,25 @@ int db_compact(const char *path) {
       if (vb < 0 || vb != vlen) {
         free(val_buf);
         free(key_buf);
-        continue; // if not read correctly
+        continue;
       }
       val_buf[vlen] = '\0';
 
-      // checksum check to make sure the data is not corrupted
       if (h.crc != calculate_checksum(h.record_type, key_buf, h.key_len,
                                       val_buf, h.val_len)) {
         free(val_buf);
         free(key_buf);
+        pthread_rwlock_unlock(&bucket->lock);
         fclose(f);
         unlink(filename_template);
         return -1;
       }
-      // get the current offset before writing to new temp file
-      long current_offset = ftell(f);
 
+      long current_offset = ftell(f);
       if (current_offset == -1) {
         free(val_buf);
         free(key_buf);
+        pthread_rwlock_unlock(&bucket->lock);
         fclose(f);
         unlink(filename_template);
         return -1;
@@ -453,6 +459,7 @@ int db_compact(const char *path) {
           db_append_raw_specifc(val_buf, vlen, f) != 0) {
         free(val_buf);
         free(key_buf);
+        pthread_rwlock_unlock(&bucket->lock);
         fclose(f);
         unlink(filename_template);
         return -1;
@@ -463,6 +470,8 @@ int db_compact(const char *path) {
       free(val_buf);
       free(key_buf);
     }
+
+    pthread_rwlock_unlock(&bucket->lock);
   }
 
   // close the stream which closes the fd

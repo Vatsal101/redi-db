@@ -44,8 +44,8 @@ int fill_offset_table(void);
 int db_compact(const char *path);
 struct WalManager* get_wal_manager(void);
 
-#include "index.h"
-HashTable* get_hash_table(void);
+#include "concurrent_hash_map.h"
+ConcurrentHashTable* get_cht(void);
 
 
 uint32_t calculate_checksum(uint8_t record_type, const char *key, uint16_t key_len, const char *value, uint32_t val_len);

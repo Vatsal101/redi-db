@@ -31,6 +31,7 @@ typedef struct WalManager {
       durable_lsn; // highest byte offset known that has already been synced
   uint64_t written_lsn; // highest byte offset written to WAL file buffer
   uint64_t next_txn_id;
+  uint64_t fsync_count;
 
   int sync_in_progress; // tells waiting writers that another thread is already
                         // doing an fsync
@@ -48,6 +49,13 @@ int wal_put(WalManager *wal, const char *key, const char *value);
 int wal_delete(WalManager *wal, const char *key);
 int wal_safe_compact(WalManager *wal);
 int wal_crash_recovery(WalManager *wal);
+
+
+int wal_commit_put(WalManager *wal, const char *key, const char *value);
+int wal_commit_delete(WalManager *wal, const char *key);
+void wal_reset_fsync_count(WalManager *wal);
+uint64_t wal_get_fsync_count(WalManager *wal);
+
 
 #define WAL_HEADER_LEN                                                         \
   (sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint16_t) +  \
