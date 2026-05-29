@@ -3,6 +3,7 @@
 #include "kv.h"
 
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -36,6 +37,10 @@ int wal_init(WalManager *wal, FILE *fp) {
   wal->fp = fp;
   if (pthread_mutex_init(&wal->lock, NULL) != 0)
     return -1;
+
+  if (pthread_cond_init(&wal->durable_cv, NULL) != 0)
+    return -1;
+
   wal->next_txn_id = 1;
 
   return 0;
@@ -64,8 +69,11 @@ int wal_write_content(WalManager *wal, uint32_t txn, uint8_t wal_type,
   if (!wal || !wal->fp)
     return -1;
 
-  size_t klen =
-      (key && wal_type != WAL_BEGIN && wal_type != WAL_COMMIT) ? strlen(key) : 0;
+  long start = ftell(wal->fp);
+
+  size_t klen = (key && wal_type != WAL_BEGIN && wal_type != WAL_COMMIT)
+                    ? strlen(key)
+                    : 0;
   size_t vlen = (value && wal_type == WAL_PUT) ? strlen(value) : 0;
 
   if (klen > UINT16_MAX || vlen > UINT32_MAX)
@@ -93,11 +101,17 @@ int wal_write_content(WalManager *wal, uint32_t txn, uint8_t wal_type,
   int result = 0;
   if (db_append_raw_specifc(full_record, total_len, wal->fp) != 0) {
     result = -1;
-  } else if (fflush(wal->fp) != 0) {
-    result = -1;
-  } else if (fsync(fileno(wal->fp)) != 0) {
-    result = -1;
   }
+
+  wal->written_lsn = start + total_len;
+
+  // want to stop fsyncing on every call of write_content
+
+  /* else if (fflush(wal->fp) != 0) {
+     result = -1;
+   } else if (fsync(fileno(wal->fp)) != 0) {
+     result = -1;
+   */
 
   free(full_record);
   return result;
@@ -111,8 +125,8 @@ static int validate_wal_record(wal_header *h, char *key, char *value) {
   if (h->record_len != WAL_HEADER_LEN + h->key_len + h->val_len)
     return 0;
 
-  return wal_checksum(h->wal_type, h->txn, key, h->key_len, value, h->val_len) ==
-         h->crc;
+  return wal_checksum(h->wal_type, h->txn, key, h->key_len, value,
+                      h->val_len) == h->crc;
 }
 
 static int read_wal_payload(FILE *fp, wal_header *h, char **key, char **value) {
@@ -293,8 +307,7 @@ int wal_safe_compact(WalManager *wal) {
   }
 
   if (fflush(wal->fp) != 0 || fsync(fileno(wal->fp)) != 0 ||
-      ftruncate(fileno(wal->fp), 0) != 0 ||
-      fseek(wal->fp, 0, SEEK_SET) != 0) {
+      ftruncate(fileno(wal->fp), 0) != 0 || fseek(wal->fp, 0, SEEK_SET) != 0) {
     result = -1;
   }
 
@@ -303,12 +316,97 @@ done:
   return result;
 }
 
+int wal_commit_op(WalManager *wal, uint8_t wall_type, const char *key,
+                  const char *value) {
+  if (!wal || key == NULL || strlen(key) == 0)
+    return -1;
+
+  if (wall_type == WAL_DEL && !value) {
+    return -1;
+  }
+  pthread_mutex_lock(&wal->lock);
+
+  int64_t txn = wal->next_txn_id++;
+
+  if (wal_write_content(wal, txn, WAL_BEGIN, NULL, NULL) != 0) {
+    return -1;
+  } else if (wal_write_content(wal, txn, wall_type, key, value)) {
+    return -1;
+  } else if (wal_write_content(wal, txn, WAL_COMMIT, NULL, NULL)) {
+    return -1;
+  }
+
+  int64_t commit_lsn = wal->written_lsn;
+
+  // group commit logic
+  // if the durable_lsn >= commit_lsn then everythign from 1 - durable_lsn is
+  // already committed to disk thus its durable
+  if (wal->durable_lsn >= commit_lsn) {
+    pthread_mutex_unlock(&wal->lock);
+    return 0;
+  }
+
+  // leader/follower system -> first writer becomes fsync leader and other
+  // writers can append behind it or wait one fsync can not make multiple
+  // transactions durable waiting writers wake up ONLY after their commit_lsn is
+  // covered if some other thread is currently syncing the buffer right now this
+  // thread doesnt need to do anything since the commit lsn is greater than
+  // durable it will sleep until its commit has been written to disk by some
+  // other thread
+  if (wal->sync_in_progress) {
+    while (wal->durable_lsn < commit_lsn) {
+      pthread_cond_wait(&wal->durable_cv, &wal->lock);
+    }
+
+    pthread_mutex_unlock(&wal->lock);
+    return 0;
+  }
+
+  // the commit has not been synced yet now we must do it ourself
+  wal->sync_in_progress = 1;
+
+  // add small delay so leader does not fsync before other threads arrive
+  // gives time for other nearby writers to join the same fsync batch
+  // basically like that condition in the article that we will want to group
+  // commit every x seconds
+  pthread_mutex_unlock(&wal->lock);
+  usleep(1000);
+  pthread_mutex_lock(&wal->lock);
+
+  int64_t target_lsn = commit_lsn;
+  fflush(wal->fp); // we assume WAL appends before target lsn have already
+                   // reached kernel buffer
+
+  pthread_mutex_unlock(&wal->lock);
+
+  fsync(fileno(wal->fp));
+
+  pthread_mutex_lock(&wal->lock);
+
+  wal->durable_lsn = target_lsn;
+  wal->sync_in_progress = 0;
+
+  pthread_cond_broadcast(&wal->durable_cv);
+
+  pthread_mutex_unlock(&wal->lock);
+  return 0;
+}
+
+int wal_commit_put(WalManager *wal, const char *key, const char *value) {
+  return wal_commit_op(wal, WAL_PUT, key, value);
+}
+
+int wal_commit_delete(WalManager *wal, const char *key) {
+  return wal_commit_op(wal, WAL_DEL, key, NULL);
+}
+
 int wal_start(WalManager *wal) {
   if (!wal)
     return -1;
 
   pthread_mutex_lock(&wal->lock);
-  int result = wal_write_content(wal, (uint32_t)wal->next_txn_id, WAL_BEGIN, NULL, NULL);
+  int result =
+      wal_write_content(wal, (uint32_t)wal->next_txn_id, WAL_BEGIN, NULL, NULL);
   if (result != 0)
     pthread_mutex_unlock(&wal->lock);
   return result;
@@ -318,7 +416,8 @@ int wal_end(WalManager *wal) {
   if (!wal)
     return -1;
 
-  int result = wal_write_content(wal, (uint32_t)wal->next_txn_id, WAL_COMMIT, NULL, NULL);
+  int result = wal_write_content(wal, (uint32_t)wal->next_txn_id, WAL_COMMIT,
+                                 NULL, NULL);
   if (result == 0)
     wal->next_txn_id++;
 
@@ -335,7 +434,8 @@ int wal_put(WalManager *wal, const char *key, const char *value) {
   if (!wal || key == NULL || value == NULL || strlen(key) == 0)
     return -1;
 
-  return wal_write_content(wal, (uint32_t)wal->next_txn_id, WAL_PUT, key, value);
+  return wal_write_content(wal, (uint32_t)wal->next_txn_id, WAL_PUT, key,
+                           value);
 }
 
 int wal_delete(WalManager *wal, const char *key) {
