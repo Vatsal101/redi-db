@@ -33,6 +33,8 @@ FILE* get_db_file();
 // Database file appending/reading operations
 int db_append_raw(const void *buf, size_t len);
 int db_append_raw_specifc(const void *buf, size_t len, FILE * fp);
+int db_append_put_record(const char *key, const char *value, long *offset_out);
+int db_append_delete_record(const char *key, long *offset_out);
 int db_read_at(long offset, void *buf, size_t len);
 
 // File pointer manipulation and information

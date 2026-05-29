@@ -12,3 +12,9 @@ MILESTONE 5
 
 
 -> make an array of buckets and each bucket has its own hash map??
+
+
+We want many threads to commit their actions
+thus we must ensure WAL records are not interleaved (meaning we it to be in the right order)
+transaction order must be clear and recoverable
+multiple transactions share 1 fsync (group commits)

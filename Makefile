@@ -6,9 +6,12 @@ SRCDIR = src
 TESTDIR = test
 OBJDIR = obj
 BINDIR = bin
+TSAN_OBJDIR = obj_tsan
+TSAN_BINDIR = bin_tsan
+TSAN_CFLAGS = -Wall -Wextra -std=c99 -g -O1 -fsanitize=thread -fno-omit-frame-pointer
 
 # Create required output directories
-$(shell mkdir -p $(OBJDIR) $(BINDIR))
+$(shell mkdir -p $(OBJDIR) $(BINDIR) $(TSAN_OBJDIR) $(TSAN_BINDIR))
 
 # Find all source and test files
 SRCS = $(wildcard $(SRCDIR)/*.c)
@@ -19,8 +22,10 @@ TEST_BINS = $(TEST_SRCS:$(TESTDIR)/%.c=$(BINDIR)/%)
 
 # Objects to link with tests 
 LIB_OBJS = $(filter-out $(OBJDIR)/main.o, $(OBJS))
+TSAN_OBJS = $(SRCS:$(SRCDIR)/%.c=$(TSAN_OBJDIR)/%.o)
+TSAN_LIB_OBJS = $(filter-out $(TSAN_OBJDIR)/main.o, $(TSAN_OBJS))
 
-.PHONY: all clean test test_index test_wal benchmark_index
+.PHONY: all clean test test_index test_wal benchmark_index test_tsan
 
 all: main $(TEST_BINS)
 
@@ -35,6 +40,10 @@ $(BINDIR)/simpledb: $(OBJS)
 $(OBJDIR)/%.o: $(SRCDIR)/%.c
 	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+
+$(TSAN_OBJDIR)/%.o: $(SRCDIR)/%.c
+	@echo "Compiling TSAN $<..."
+	$(CC) $(TSAN_CFLAGS) $(INCLUDES) -c $< -o $@
 
 # Build executables
 $(BINDIR)/%: $(TESTDIR)/%.c $(LIB_OBJS)
@@ -54,6 +63,14 @@ benchmark_index: $(BINDIR)/benchmark_index
 	@echo "Running performance benchmark..."
 	./$(BINDIR)/benchmark_index
 
+$(TSAN_BINDIR)/multithreaded_wal_test: $(TESTDIR)/multithreaded_wal_test.c $(TSAN_LIB_OBJS)
+	@echo "Building TSAN test $@..."
+	$(CC) $(TSAN_CFLAGS) $(INCLUDES) $< $(TSAN_LIB_OBJS) -o $@
+
+test_tsan: $(TSAN_BINDIR)/multithreaded_wal_test
+	@echo "Running ThreadSanitizer WAL test..."
+	./$(TSAN_BINDIR)/multithreaded_wal_test
+
 test: $(TEST_BINS)
 	@echo "Running all tests..."
 	@for test in $(TEST_BINS); do \
@@ -64,5 +81,5 @@ test: $(TEST_BINS)
 
 clean:
 	@echo "Cleaning build files and databases..."
-	rm -rf $(OBJDIR) $(BINDIR)
+	rm -rf $(OBJDIR) $(BINDIR) $(TSAN_OBJDIR) $(TSAN_BINDIR)
 	rm -f *.db *.db.wal

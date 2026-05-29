@@ -11,6 +11,7 @@ static FILE *p_db_file = NULL;
 static WalManager wal;
 static int wal_initialized = 0;
 static ConcurrentHashTable curr_cht;
+static pthread_mutex_t db_file_lock = PTHREAD_MUTEX_INITIALIZER;
 
 ConcurrentHashTable *get_cht(void) { return &curr_cht; }
 
@@ -53,7 +54,6 @@ void db_close() {
     wal.fp = NULL;
     wal_initialized = 0;
   }
-  // Clean up hash table when closing database
   cleanup_concurrent_hash_table(&curr_cht);
 }
 
@@ -72,7 +72,7 @@ int db_create(const char *path) {
   FILE *wal_fp = fopen(
       strcat(path_copy, wal_path),
       "w+b"); // concat path with the wal ending and create file with that name
-
+  
   if (!p_db_file || !wal_fp) {
     if (p_db_file)
       fclose(p_db_file);
@@ -110,49 +110,102 @@ int db_create(const char *path) {
 // array to be written, size = size of each element, count = number of elements
 // to be written, ftpr - file pointer returns the number of items written
 // sucessfully
-int db_append_raw(const void *buf, size_t len) {
-  if (!p_db_file || !buf)
+static int append_raw_unlocked(FILE *fp, const void *buf, size_t len,
+                               int sync_to_disk) {
+  if (!fp || !buf)
     return -1;
-  // ensure the writes will be going to the end of the file
-  if (fseek(p_db_file, 0, SEEK_END) != 0) {
-    return -1;
-  }
-  // append the raw data to the file and check if it was written
-  //
-  size_t written = fwrite(buf, len, 1, p_db_file);
-  if (written != 1) {
-    return -1;
-  }
-  // flush to make sure its written to OS buffers
-  if (fflush(p_db_file) != 0) {
-    return -1;
-  }
 
-  if (fsync(fileno(p_db_file)) != 0) {
+  if (fseek(fp, 0, SEEK_END) != 0)
     return -1;
-  }
+
+  size_t written = fwrite(buf, len, 1, fp);
+  if (written != 1)
+    return -1;
+
+  if (fflush(fp) != 0)
+    return -1;
+
+  if (sync_to_disk && fsync(fileno(fp)) != 0)
+    return -1;
+
   return 0;
 }
 
-int db_append_raw_specifc(const void *buf, size_t len, FILE *fp) {
-  if (!fp || !buf)
+static int write_db_record_unlocked(uint8_t record_type, const char *key,
+                                    const char *value, long *offset_out) {
+  if (!p_db_file || !key)
     return -1;
-  // ensure the writes will be going to the end of the file
-  if (fseek(fp, 0, SEEK_END) != 0) {
+
+  size_t klen = strlen(key);
+  size_t vlen = value ? strlen(value) : 0;
+  if (klen > UINT16_MAX || vlen > UINT32_MAX)
     return -1;
-  }
-  // append the raw data to the file and check if it was written
-  //
-  size_t written = fwrite(buf, len, 1, fp);
-  if (written != 1) {
+
+  record_header_t record;
+  record.record_type = record_type;
+  record.key_len = (uint16_t)klen;
+  record.val_len = (uint32_t)vlen;
+  record.record_len = HEADER_LEN + record.key_len + record.val_len;
+  record.crc = calculate_checksum(record.record_type, key, record.key_len,
+                                  value, record.val_len);
+
+  char header[HEADER_LEN];
+  serialize(&record, header);
+
+  if (fseek(p_db_file, 0, SEEK_END) != 0)
     return -1;
-  }
-  // flush to make sure its written to OS buffers
-  if (fflush(fp) != 0) {
+
+  long offset = ftell(p_db_file);
+  if (offset == -1)
     return -1;
-  }
+
+  if (fwrite(header, HEADER_LEN, 1, p_db_file) != 1)
+    return -1;
+  if (fwrite(key, klen, 1, p_db_file) != 1)
+    return -1;
+  if (vlen > 0 && fwrite(value, vlen, 1, p_db_file) != 1)
+    return -1;
+
+  if (fflush(p_db_file) != 0)
+    return -1;
+  if (fsync(fileno(p_db_file)) != 0)
+    return -1;
+
+  if (offset_out)
+    *offset_out = offset;
 
   return 0;
+}
+
+int db_append_raw(const void *buf, size_t len) {
+  pthread_mutex_lock(&db_file_lock);
+  int result = append_raw_unlocked(p_db_file, buf, len, 1);
+  pthread_mutex_unlock(&db_file_lock);
+  return result;
+}
+
+int db_append_raw_specifc(const void *buf, size_t len, FILE *fp) {
+  return append_raw_unlocked(fp, buf, len, 0);
+}
+
+int db_append_put_record(const char *key, const char *value, long *offset_out) {
+  if (!key || !value)
+    return -1;
+
+  pthread_mutex_lock(&db_file_lock);
+  int result = write_db_record_unlocked(1, key, value, offset_out);
+  pthread_mutex_unlock(&db_file_lock);
+  return result;
+}
+
+int db_append_delete_record(const char *key, long *offset_out) {
+  if (!key)
+    return -1;
+
+  pthread_mutex_lock(&db_file_lock);
+  int result = write_db_record_unlocked(2, key, NULL, offset_out);
+  pthread_mutex_unlock(&db_file_lock);
+  return result;
 }
 // since the buffer is not a const it means it can be modified that means that
 // buf is going to be an abstract way to store the data we get from our db when
@@ -166,22 +219,28 @@ int db_read_at(long offset, void *buf, size_t len) {
   if (!p_db_file || !buf)
     return -1;
 
+  pthread_mutex_lock(&db_file_lock);
+
   int seek_result = fseek(p_db_file, offset, SEEK_SET);
   if (seek_result != 0) {
+    pthread_mutex_unlock(&db_file_lock);
     return -1;
   }
 
   size_t bytes_read = fread(buf, 1, len, p_db_file);
   if (bytes_read != len) {
     if (feof(p_db_file)) {
+      pthread_mutex_unlock(&db_file_lock);
       return 0; // EOF reached
     }
     if (ferror(p_db_file)) {
       clearerr(p_db_file);
+      pthread_mutex_unlock(&db_file_lock);
       return -1;
     }
   }
 
+  pthread_mutex_unlock(&db_file_lock);
   // returns how many bytes were successfully read by fread
   return (int)bytes_read;
 }
@@ -282,9 +341,9 @@ int db_open(const char *path) {
   }
 
   // Initialize hash table when opening an existing database
-  
 
-  cleanup_concurrent_hash_table(&curr_cht); // Clean up any existing hash table first
+  cleanup_concurrent_hash_table(
+      &curr_cht); // Clean up any existing hash table first
 
   if (init_concurrent_hash_table(&curr_cht) != 0) {
     fclose(p_db_file);
@@ -292,8 +351,6 @@ int db_open(const char *path) {
     p_db_file = NULL;
     return -1;
   }
-
-  
 
   // Rebuild the hash table from the existing data
   if (fill_offset_table() != 0) {
@@ -332,7 +389,9 @@ int db_open(const char *path) {
 }
 
 long get_curr_offset() {
+  pthread_mutex_lock(&db_file_lock);
   long current_offset = ftell(p_db_file);
+  pthread_mutex_unlock(&db_file_lock);
 
   if (current_offset == -1L) {
     return -1; // somethign is wrong with the offset
